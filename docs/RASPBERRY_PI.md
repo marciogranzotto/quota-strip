@@ -85,6 +85,28 @@ Start with the panel's advertised EDID mode. In the display session, `xrandr --q
 
 If the panel advertises 1920 × 480 but another mode is selected, select that existing mode with `xrandr --output <connector> --mode 1920x480`, then make the setting persistent once confirmed. If it does not advertise the mode, obtain the manufacturer's timing specifications before forcing custom timings. Current Raspberry Pi OS uses KMS configuration; legacy `hdmi_cvt` recipes should not be applied blindly. See [Raspberry Pi display configuration](https://www.raspberrypi.com/documentation/computers/configuration.html).
 
+Some strip panels advertise their native mode as **480 × 1920**, even when mounted horizontally. Use that native mode and rotate it instead of creating a custom timing:
+
+```sh
+xrandr --output <connector> --mode 480x1920 --rotate right
+```
+
+Choose `right` for clockwise rotation or `left` for counterclockwise rotation. Confirm the picture is upright and `xrandr --query` reports a 1920 × 480 desktop. On this dedicated, single-display appliance, save the confirmed orientation in `/etc/X11/xorg.conf.d/90-quota-strip-monitor.conf`:
+
+```conf
+Section "Monitor"
+    Identifier "Quota Strip"
+    Option "PreferredMode" "480x1920"
+    Option "Rotate" "right"
+EndSection
+```
+
+Xorg associates this monitor section with the single output and applies it before the dashboard starts. Restart LightDM to apply changes. This rotates the graphical session; the text boot console retains its own orientation. See the [Xorg monitor configuration reference](https://www.x.org/releases/current/doc/man/man5/xorg.conf.5.xhtml).
+
+## Power checks
+
+Repeated `Undervoltage detected!` console messages indicate a power problem, even if Wi-Fi and SSH work. Inspect `vcgencmd get_throttled`: bit 0 means undervoltage is active and bit 2 means throttling is active; bits 16 and 18 retain the corresponding history since boot. Check both the adapter and the micro-USB cable, and shut down cleanly before changing the power connection. See [Raspberry Pi power supply guidance](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#power-supply).
+
 ## Acceptance checks on the Pi
 
 1. Confirm `uname -m` is `aarch64` and `/proc/device-tree/model` identifies the expected Pi 3B.
