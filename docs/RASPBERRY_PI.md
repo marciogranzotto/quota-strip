@@ -16,6 +16,8 @@ Configure:
 - Your actual timezone and keyboard layout.
 - Ethernet, or your Wi-Fi credentials with the correct country setting.
 
+Wi-Fi is sufficient for both setup and normal operation; Ethernet is optional. The Pi 3B supports **2.4 GHz Wi-Fi only**, so enable that band on the configured network. See Raspberry Pi's [wireless compatibility table](https://www.raspberrypi.com/documentation/computers/getting-started.html).
+
 Write and verify the image, then insert the card into the Pi. Connect HDMI, networking, and a suitable micro-USB power supply. Allow several minutes for the first boot. Connect using the key configured in Imager:
 
 ```sh
