@@ -6,7 +6,9 @@ The installer and Linux rendering are checked in development. Physical display t
 
 ## 1. Prepare the microSD
 
-Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Select Raspberry Pi 3, Raspberry Pi OS Lite (64-bit), and the intended microSD. Writing an image erases that entire card; identify its label and capacity first.
+Use **Raspberry Pi Imager 2.x or newer** from the [official download page](https://www.raspberrypi.com/software/). Imager 1.x cannot apply customization to current Trixie images: it writes a valid OS image but uses the wrong initialization format, leaving the user, Wi-Fi, and SSH settings unapplied. See the [official compatibility documentation](https://github.com/raspberrypi/rpi-imager/blob/main/doc/os_customisation_formats.md). An image verification success alone does not verify first-boot customization.
+
+Select Raspberry Pi 3, Raspberry Pi OS Lite (64-bit), and the intended microSD. Writing an image erases that entire card; identify its label and capacity first.
 
 Configure:
 
