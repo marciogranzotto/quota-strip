@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from quota_model import number, parse_claude, parse_codex
+from quota_model import number, parse_claude, parse_codex, parse_reset_bank
 
 CLAUDE_CLIENT = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CODEX_CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -151,14 +151,18 @@ def token_record(response, previous=None):
 class Provider:
     def __init__(self, name, home=None, request=request_json):
         self.name, self.store, self.request = name, CredentialStore(name, home), request
+        self.reset_retry_at = 0
+        self.reset_backoff = 120
+        self.reset_warning = None
 
     def refresh(self, creds):
         if not creds.get("refresh_token"):
             raise QuotaError("Sign-in needs renewal; run quota_auth.py")
         _, token_url, client = PROVIDERS[self.name]
-        response = self.request(token_url, payload={
-            "grant_type": "refresh_token", "refresh_token": creds["refresh_token"], "client_id": client,
-        }, form=self.name == "codex")
+        payload = {"grant_type": "refresh_token", "refresh_token": creds["refresh_token"], "client_id": client}
+        if self.name == "claude":
+            payload["scope"] = "user:profile"
+        response = self.request(token_url, payload=payload, form=self.name == "codex")
         updated = token_record(response, creds)
         self.store.save(updated)
         return updated
@@ -188,4 +192,33 @@ class Provider:
             headers["anthropic-beta"] = "oauth-2025-04-20"
         elif creds.get("account_id"):
             headers["ChatGPT-Account-Id"] = creds["account_id"]
-        return self.request(PROVIDERS[self.name][0], headers=headers)
+        data = self.request(PROVIDERS[self.name][0], headers=headers)
+        if self.name == "codex":
+            self.add_reset_details(data, headers)
+        return data
+
+    def add_reset_details(self, data, headers):
+        """Read optional expiry details without delaying ordinary quota recovery."""
+        bank = parse_reset_bank(data.get("rate_limit_reset_credits"))
+        if bank is None:
+            return
+        if bank.available_count == 0:
+            data["rate_limit_reset_credits"]["credits"] = []
+            return
+        if time.monotonic() < self.reset_retry_at:
+            data["_quota_strip_warning"] = self.reset_warning
+            return
+        try:
+            details = self.request("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", headers=headers)
+            if parse_reset_bank(details) is None:
+                raise QuotaError("Reset-bank response changed")
+        except QuotaError as exc:
+            self.reset_backoff = min(self.reset_backoff * 2, 1800)
+            self.reset_retry_at = time.monotonic() + max(self.reset_backoff, exc.retry_after)
+            self.reset_warning = f"Reset expiry unavailable: {exc}"
+            data["_quota_strip_warning"] = self.reset_warning
+        else:
+            data["rate_limit_reset_credits"] = details
+            self.reset_retry_at = 0
+            self.reset_backoff = 120
+            self.reset_warning = None

@@ -1,0 +1,102 @@
+# Raspberry Pi appliance
+
+Target: **Raspberry Pi 3 Model B v1.2**, a 1920 × 480 HDMI strip, and Raspberry Pi OS Lite **64-bit** (Trixie). The Python/Pygame application talks directly to provider account endpoints. A Mac, browser, or coding CLI is not needed during normal operation.
+
+The installer and Linux rendering are checked in development. Physical display timing, first boot, and power/network recovery must still be verified on the actual hardware.
+
+## 1. Prepare the microSD
+
+Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/). Select Raspberry Pi 3, Raspberry Pi OS Lite (64-bit), and the intended microSD. Writing an image erases that entire card; identify its label and capacity first.
+
+Configure:
+
+- Hostname: `quota-strip`.
+- Username: `quota`, with a password you choose.
+- SSH with public-key authentication; add your computer's public key.
+- Your actual timezone and keyboard layout.
+- Ethernet, or your Wi-Fi credentials with the correct country setting.
+
+Write and verify the image, then insert the card into the Pi. Connect HDMI, networking, and a suitable micro-USB power supply. Allow several minutes for the first boot. Connect using the key configured in Imager:
+
+```sh
+ssh quota@quota-strip.local
+```
+
+If `.local` discovery is unavailable, use the Pi's address from your router. Keep the Mac's private SSH key on the Mac.
+
+## 2. Install the dashboard
+
+On the Pi:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/marciogranzotto/quota-strip.git
+cd quota-strip
+sudo ./setup-pi.sh
+```
+
+The installer uses distribution packages for Python, Pygame, fonts, Xorg, LightDM, and the systemd user session. It installs an explicit list of application files under `/opt/quota-strip`, configures LightDM to sign the appliance user into the dashboard, and installs a systemd user service to restart the app after an exit or crash. It does not copy checkout credentials or change HDMI timings. It stops the graphical session while updating and leaves it stopped until sign-in is ready.
+
+## 3. Sign in as the appliance user
+
+Run these **without sudo**:
+
+```sh
+python3 /opt/quota-strip/quota_auth.py claude
+python3 /opt/quota-strip/quota_auth.py codex
+```
+
+Follow the browser links from your phone or computer. Claude's terminal flow asks for the returned `code#state` with hidden input; Codex uses a short device code. Credentials are stored with mode `0600` under the appliance user's `~/.config/quota-strip`. Never put them in Git or share the token files. Token renewal is automatic, but revoked access requires sign-in again.
+
+To move an existing Quota Strip installation between devices, transfer **only its dedicated** `claude-auth.json` and `codex-auth.json` privately over SSH, with both displays stopped. Do not copy Claude Code or Codex CLI credentials. Treat this as a move: do not run two collectors with the same rotating refresh token. Alternatively, sign in separately on the Pi and leave the Mac's session independent.
+
+## 4. Start and inspect
+
+```sh
+sudo systemctl restart lightdm
+systemctl --user status quota-strip.service
+journalctl --user -u quota-strip.service -n 50 --no-pager
+```
+
+The dashboard should appear on HDMI and start automatically after reboot. It polls providers independently. During network failures, it retains visibly stale readings and backs off; after reconnection, it replaces them with fresh data. It can boot offline and show cached data while retrying.
+
+Settings are in `~/.config/quota-strip/display.env`, initially populated from the Pi's system timezone. For example:
+
+```ini
+QUOTA_TIMEZONE=Europe/London
+```
+
+After changing settings:
+
+```sh
+systemctl --user restart quota-strip.service
+```
+
+To pause the display, use `systemctl --user stop quota-strip.service`. To resume its graphical session, use `sudo systemctl restart lightdm`. In appliance mode, closing the app or pressing Q restarts it after five seconds.
+
+## 5. Verify the HDMI mode
+
+Start with the panel's advertised EDID mode. In the display session, `xrandr --query` lists modes. From SSH, obtain the display and authority paths with `systemctl --user show-environment`, and supply those values to `xrandr`; do not change X access controls.
+
+If the panel advertises 1920 × 480 but another mode is selected, select that existing mode with `xrandr --output <connector> --mode 1920x480`, then make the setting persistent once confirmed. If it does not advertise the mode, obtain the manufacturer's timing specifications before forcing custom timings. Current Raspberry Pi OS uses KMS configuration; legacy `hdmi_cvt` recipes should not be applied blindly. See [Raspberry Pi display configuration](https://www.raspberrypi.com/documentation/computers/configuration.html).
+
+## Acceptance checks on the Pi
+
+1. Confirm `uname -m` is `aarch64` and `/proc/device-tree/model` identifies the expected Pi 3B.
+2. Confirm Claude's five-hour, weekly, and Fable meters; Codex's returned windows; and the reset-bank count/expiry against account usage pages.
+3. Reboot with the Mac disconnected. The native dashboard must return by itself at 1920 × 480.
+4. Interrupt the Pi's network. Readings must become stale without disappearing or becoming zero. Reconnect and verify automatic recovery.
+5. Kill the dashboard process and confirm systemd restarts it. Inspect `NRestarts` using `systemctl --user show quota-strip.service -p NRestarts`.
+6. Leave it running across quota resets and token expiry. Inspect memory/CPU use and logs, and confirm no repeated sign-in prompts or tight request loops.
+
+## Updates
+
+```sh
+cd ~/quota-strip
+git pull --ff-only
+sudo ./setup-pi.sh
+sudo systemctl restart lightdm
+```
+
+Credentials and display settings remain in the appliance user's configuration directory.

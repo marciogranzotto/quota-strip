@@ -29,13 +29,13 @@ The weekly guide uses a fixed seven-day window ending at the reported reset. Its
 - [fuelcheck authentication](https://github.com/emanuelarcos/fuelcheck/blob/main/internal/auth/codex.go): existing consumer client ID and refresh contract.
 - [RFC 7636](https://www.rfc-editor.org/rfc/rfc7636): PKCE S256; the tests include its published verifier/challenge vector.
 
-Standalone mode keeps appliance-owned credentials separate from local CLI stores, serializes renewal, and saves tokens atomically. Real standalone login and refresh remain unverified. The Mac prototype uses existing Claude credentials and the installed Codex app-server.
+Standalone mode keeps appliance-owned credentials separate from local CLI stores, serializes renewal, and saves tokens atomically. Real standalone login, quota reads, and token refresh have been verified for both providers on macOS. Local mode remains available using existing Claude credentials and the installed Codex app-server.
 
 ## Validation boundaries
 
 Live macOS reads have been verified. Unit tests cover quotas, pacing, storage, staleness, and mocked authentication. A headless demo checks the native drawing path without using account data.
 
-Original Raspberry Pi B+ deployment, display timing, OS installation, unattended startup, and real standalone token rotation have not been validated. [Raspberry Pi operating systems](https://www.raspberrypi.com/software/operating-systems/) is the starting point for that later phase.
+The deployment target is a Raspberry Pi 3 Model B v1.2, using Raspberry Pi OS Lite 64-bit. Raspberry Pi lists the 3B as compatible with its 64-bit OS. Display timing, OS installation, unattended startup, and physical validation remain ahead. See [Raspberry Pi operating systems](https://www.raspberrypi.com/software/operating-systems/).
 
 ## Banked reset metadata
 
@@ -48,3 +48,13 @@ The dashboard reads metadata only; it does not implement reset redemption. Ordin
 ## Partial Claude readings
 
 Claude Code's documented status-line payload reports only the main five-hour and weekly windows. A successful fallback therefore cannot replace a complete account snapshot or clear an account error. The collector retains missing windows with their original observation times, marks them stale, and retries the account endpoint with exponential backoff while reading the local capture at the normal interval. A complete account response replaces the partial state and may remove quotas that are no longer reported.
+
+## Standalone boot and callback
+
+- [RFC 8252](https://www.rfc-editor.org/rfc/rfc8252): native OAuth loopback callbacks with PKCE. The listener binds IPv4 loopback, validates state and callback host/path, accepts one result, and suppresses request logs.
+- [Python HTTP server](https://docs.python.org/3/library/http.server.html): `ThreadingHTTPServer` handles browser pre-opened sockets without blocking the callback.
+- [Codex backend reset client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client/rate_limit_resets.rs) and [types](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/types.rs): HTTP usage includes `rate_limit_reset_credits.available_count`; GET `/wham/rate-limit-reset-credits` provides expiry details in snake_case with ISO timestamps. These fields are normalized without retaining identifiers. No redemption operation is implemented.
+- [LightDM configuration](https://github.com/canonical/lightdm/blob/main/data/lightdm.conf): a dedicated auto-login X session supplies display authorization.
+- [systemctl](https://manpages.debian.org/trixie/systemd/systemctl.1.en.html) and [service restart policy](https://manpages.debian.org/trixie/systemd/systemd.service.5.en.html): import only display environment variables, start the user service with `--wait`, and let systemd restart the dashboard.
+
+The Pi installer uses distribution-provided Pygame and Xorg packages. The Mac remains independent from the Pi's operation; each device should have a separate provider login when both run simultaneously.

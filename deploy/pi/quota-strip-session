@@ -1,0 +1,9 @@
+#!/bin/sh
+# LightDM owns the local X session; systemd owns the dashboard process.
+set -eu
+xset s off
+xset -dpms
+xset s noblank
+systemctl --user import-environment DISPLAY XAUTHORITY
+systemctl --user daemon-reload
+exec systemctl --user start --wait quota-strip.service

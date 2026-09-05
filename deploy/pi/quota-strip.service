@@ -1,0 +1,17 @@
+[Unit]
+Description=Quota Strip native dashboard
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=/opt/quota-strip
+Environment=PYGAME_HIDE_SUPPORT_PROMPT=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=SDL_VIDEODRIVER=x11
+EnvironmentFile=-%h/.config/quota-strip/display.env
+ExecStart=/usr/bin/python3 -u /opt/quota-strip/quota_display.py --source standalone
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=yes

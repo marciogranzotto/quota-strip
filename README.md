@@ -5,7 +5,7 @@
 **Your Claude and Codex limits, always in sight.**
 
 A compact, native dashboard for a 1920 × 480 strip display.<br>
-Built for macOS today, with a standalone Raspberry Pi appliance on the roadmap.
+Runs natively on macOS, with a standalone Raspberry Pi installer.
 
 [![CI](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml/badge.svg)](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -26,7 +26,7 @@ Built for macOS today, with a standalone Raspberry Pi appliance on the roadmap.
 
 The dashboard reads subscription quotas, not estimated token costs. It makes no inference requests and runs without a browser, web server, or hosted service.
 
-> **Status: macOS prototype.** Live collection works with existing Claude Code and Codex sign-ins. Standalone authentication is experimental; Raspberry Pi installation and hardware validation are still ahead.
+> **Status:** standalone sign-in, live quota reads, and real token renewal are verified on macOS. The Raspberry Pi installer is ready for hardware validation. Consumer account endpoints are unofficial and can change.
 
 ## Try it
 
@@ -45,9 +45,25 @@ For live readings, install and sign in to [Claude Code](https://code.claude.com/
 ./run.sh --source local --windowed
 ```
 
-Or double-click **Launch Quota Strip.command** after setup. Press **Esc** or **Q**, or close the window, to quit.
+Press **Esc** or **Q**, or close the window, to quit.
 
 Each provider refreshes independently every two minutes. Network failures retain the last reading and back off before retrying. Missing data is never treated as zero usage.
+
+## Standalone sign-in
+
+Sign in separately for Quota Strip to run without either coding CLI:
+
+```sh
+.venv/bin/python quota_auth.py claude --browser
+.venv/bin/python quota_auth.py codex
+./run.sh --source standalone --windowed
+```
+
+Open the printed links to finish sign-in. Claude's `--browser` option accepts its callback on this computer; omit that option when signing in through an SSH terminal. No tokens are printed. Dedicated credentials are stored outside the repository, and the collector refreshes them automatically. Both providers' real sign-in and token renewal have been verified on macOS.
+
+After standalone sign-in, double-click **Launch Quota Strip.command** to open the display. Existing CLI sessions remain available through `--source local`.
+
+For Raspberry Pi OS Lite 64-bit, follow the [Pi setup guide](docs/RASPBERRY_PI.md). It covers imaging, SSH, dedicated sign-in, automatic startup, updates, and physical acceptance checks.
 
 ## Reading the weekly meter
 
@@ -70,11 +86,11 @@ Fable uses its own reported percentage and reset time. It also draws from Claude
 
 ## Banked resets
 
-The Codex header shows saved usage-limit resets and the next expiry in your configured timezone. It reads the official app-server's `rateLimitResetCredits` summary; checking the count does not redeem a reset.
+The Codex header shows saved usage-limit resets and the next expiry in your configured timezone. Local mode reads the app-server's `rateLimitResetCredits` summary. Standalone mode reads the account usage summary and the read-only reset-credit details endpoint. Checking the count does not redeem a reset.
 
 The server's total is authoritative, even when it returns only some detail rows. Partial lists are labeled **Listed expiry** rather than claiming to show the next expiry across the whole bank. Missing data displays **Count unavailable**, never zero. When a known expiry passes or collection goes stale, the last count is marked as awaiting an update.
 
-Only the count, earliest supplied expiry, and detail-completeness flag enter the local snapshot. Credit identifiers and descriptions are discarded. This indicator currently requires the local Codex app-server source; the experimental direct collector does not fetch reset-bank metadata.
+Only the count, earliest supplied expiry, and detail-completeness flag enter the local snapshot. Credit identifiers and descriptions are discarded. Both collection modes support this indicator. If the optional expiry request fails, standalone mode keeps the live count and ordinary quotas, reports partial data, and backs off that request independently.
 
 No equivalent Claude banked-reset count has been verified. Claude's paid usage credits and automatic quota resets are separate concepts; the dashboard does not infer a bank from them.
 
@@ -105,9 +121,9 @@ The layout keeps two windows visible and rotates additional windows through the 
 
 ## Data sources and privacy
 
-**Claude** reads the existing Claude Code credentials file or macOS Keychain entry and requests account usage. It does not modify or refresh those credentials. If they expire, renew the login through Claude Code. An optional fallback reads `~/.claude/.debug/statusline-input.json` if an existing status-line setup already produces it; Quota Strip does not create or enable that capture. The status line only reports the main windows. During an account failure, those windows keep updating while previously observed model quotas such as Fable remain visible with their original timestamps and a **Last known** label. The footer reports **PARTIAL** and the account error. With no previous model reading, the display shows model limits as unavailable. Account requests back off independently of local status-line reads.
+**In local mode, Claude** reads the existing Claude Code credentials file or macOS Keychain entry and requests account usage. It does not modify or refresh those credentials. If they expire, renew the login through Claude Code. An optional fallback reads `~/.claude/.debug/statusline-input.json` if an existing status-line setup already produces it; Quota Strip does not create or enable that capture. The status line only reports the main windows. During an account failure, those windows keep updating while previously observed model quotas such as Fable remain visible with their original timestamps and a **Last known** label. The footer reports **PARTIAL** and the account error. With no previous model reading, the display shows model limits as unavailable. Account requests back off independently of local status-line reads.
 
-**Codex** launches the installed CLI's app-server, requests `account/rateLimits/read`, and stops that child process after the read. No coding task is started. The CLI manages its own account session.
+**In local mode, Codex** launches the installed CLI's app-server, requests `account/rateLimits/read`, and stops that child process after the read. No coding task is started. The CLI manages its own account session.
 
 Runtime snapshots store normalized percentages, window labels, timestamps, and source information. The application does not collect prompts, transcripts, or email addresses. It has no telemetry. Credentials are sent only to their provider's account endpoints; provider errors are sanitized before display.
 
@@ -129,7 +145,7 @@ The only runtime dependency outside the Python standard library is **Pygame**. N
 | --- | --- |
 | `quota_model.py` | Normalize provider windows and calculate weekly allowances. |
 | `quota_local.py` | Read existing local Claude and Codex sign-ins. |
-| `quota_api.py`, `quota_auth.py` | Experimental standalone account requests and sign-in flows. |
+| `quota_api.py`, `quota_auth.py`, `quota_callback.py` | Standalone account requests, sign-in, and browser callback. |
 | `quota_state.py` | Independent polling, backoff, caching, and stale readings. |
 | `quota_display.py` | Native rendering, demo mode, and command-line options. |
 
@@ -140,14 +156,15 @@ Tests cover provider parsing, model-specific quotas, midnight and DST boundaries
 - [x] Native 1920 × 480 macOS dashboard.
 - [x] Claude, Fable, Codex, and Spark quota windows.
 - [x] Weekly pacing, reset countdowns, and stale-data handling.
-- [ ] Verify independent sign-in and real token renewal end to end.
-- [ ] Validate unattended recovery from network and authentication failures.
-- [ ] Deploy on an original Raspberry Pi Model B+ with automatic startup.
+- [x] Verify independent sign-in and real token renewal on macOS.
+- [x] Exercise network failures, expired credentials, backoff, and cache recovery with automated tests.
+- [ ] Validate physical network recovery and sustained unattended operation on the Pi.
+- [ ] Deploy on a Raspberry Pi 3 Model B v1.2 with automatic startup.
 - [ ] Validate the physical HDMI panel and long-running resource usage.
 
-`--source standalone` and `quota_auth.py` provide groundwork for appliance-owned credentials. Their flows have mocked tests but are not yet validated with real standalone sign-in or refresh. The consumer usage endpoints are not a stable public integration API and may change.
+Standalone mode uses appliance-owned credentials. Tests exercise callback validation, expired-token renewal, retry limits, network recovery, optional metadata failures, and cache restoration. The consumer usage endpoints are not a stable public integration API and may change.
 
-This project does not track every ChatGPT feature, API billing, extra-usage credit balances, or a guaranteed number of remaining messages. No Raspberry Pi installer is provided yet; `install.sh` currently delegates to the Mac setup script.
+This project does not track every ChatGPT feature, API billing, extra-usage credit balances, or a guaranteed number of remaining messages. `install.sh` selects the Mac or Raspberry Pi installer. Pi HDMI timing and long-running resource usage still need physical validation.
 
 ## Credits
 

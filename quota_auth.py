@@ -6,6 +6,7 @@ not a supported third-party API; sign-in may need changes as providers evolve.
 from __future__ import annotations
 import argparse
 import base64
+from contextlib import nullcontext
 import getpass
 import hashlib
 import hmac
@@ -13,6 +14,7 @@ import json
 import secrets
 import time
 from urllib.parse import urlencode
+from quota_callback import LoopbackCallback
 from quota_api import (CLAUDE_CLIENT, CODEX_CLIENT, CredentialStore, PROVIDERS,
                        QuotaError, request_json, token_record)
 
@@ -21,20 +23,24 @@ def pkce_challenge(verifier):
     return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode()
 
 
-def claude_login(request=request_json, prompt=getpass.getpass):
+def claude_login(request=request_json, prompt=getpass.getpass, *, browser=False):
     verifier, state = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-    redirect = "https://platform.claude.com/oauth/code/callback"
-    query = urlencode({
-        "code": "true", "client_id": CLAUDE_CLIENT, "response_type": "code",
-        "redirect_uri": redirect, "scope": "user:profile",
-        "code_challenge": pkce_challenge(verifier), "code_challenge_method": "S256", "state": state,
-    })
-    print("Open this link in a browser on your phone or computer:\n")
-    print("https://claude.ai/oauth/authorize?" + query)
-    supplied = prompt("\nPaste the returned code#state here (hidden): ").strip()
-    code, separator, returned_state = supplied.partition("#")
-    if not separator or not code or not hmac.compare_digest(state, returned_state):
-        raise QuotaError("Authorization state mismatch; start sign-in again")
+    with LoopbackCallback(state) if browser else nullcontext() as callback:
+        redirect = callback.redirect_uri if callback else "https://platform.claude.com/oauth/code/callback"
+        query = urlencode({
+            "code": "true", "client_id": CLAUDE_CLIENT, "response_type": "code",
+            "redirect_uri": redirect, "scope": "user:profile",
+            "code_challenge": pkce_challenge(verifier), "code_challenge_method": "S256", "state": state,
+        })
+        print("Open this link in a browser" + (" on this computer:" if browser else " on your phone or computer:"))
+        print("https://claude.ai/oauth/authorize?" + query, flush=True)
+        if callback:
+            code = callback.wait()
+        else:
+            supplied = prompt("\nPaste the returned code#state here (hidden): ").strip()
+            code, separator, returned_state = supplied.partition("#")
+            if not separator or not code or not hmac.compare_digest(state, returned_state):
+                raise QuotaError("Authorization state mismatch; start sign-in again")
     response = request(PROVIDERS["claude"][1], payload={
         "grant_type": "authorization_code", "client_id": CLAUDE_CLIENT,
         "redirect_uri": redirect, "code": code, "state": state, "code_verifier": verifier,
@@ -97,11 +103,12 @@ def codex_login(request=request_json, sleep=time.sleep, monotonic=time.monotonic
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("provider", choices=["claude", "codex"])
+    parser.add_argument("--browser", action="store_true", help="Use a local browser callback for Claude sign-in")
     args = parser.parse_args()
     store = CredentialStore(args.provider)
     try:
         with store.locked():
-            record = claude_login() if args.provider == "claude" else codex_login()
+            record = claude_login(browser=args.browser) if args.provider == "claude" else codex_login()
             if not record.get("refresh_token"):
                 raise QuotaError("No refresh token returned; unattended sign-in is unavailable")
             store.save(record)

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Quota Strip
+Comment=Standalone Claude and Codex quota display
+Exec=/usr/local/bin/quota-strip-session
+Type=Application
+DesktopNames=QuotaStrip

@@ -83,10 +83,10 @@ class ResetBank:
 
 
 def parse_reset_bank(data):
-    """Optional app-server metadata. Never retain credit IDs or descriptions."""
+    """Optional app-server or HTTP metadata; discard credit IDs and descriptions."""
     if not isinstance(data, dict):
         return None
-    bank = ResetBank.from_dict({"available_count": data.get("availableCount")})
+    bank = ResetBank.from_dict({"available_count": data.get("availableCount", data.get("available_count"))})
     if bank is None:
         return None
     rows = data.get("credits")
@@ -98,10 +98,10 @@ def parse_reset_bank(data):
         if not isinstance(row, dict) or row.get("status") != "available":
             complete = False
             continue
-        if "expiresAt" not in row:
+        if "expiresAt" not in row and "expires_at" not in row:
             complete = False
             continue
-        raw = row["expiresAt"]
+        raw = row.get("expiresAt", row.get("expires_at"))
         if raw is None:  # The protocol explicitly defines null as no expiry.
             continue
         expiry = timestamp(raw)
@@ -257,7 +257,8 @@ def parse_codex(data, now):
             windows.append(Window(f"{bucket}:{slot}", duration_label(seconds), used,
                                   reset, seconds, str(name)))
     return Snapshot("codex", tuple(windows), now,
-                    reset_bank=parse_reset_bank(data.get("rateLimitResetCredits")))
+                    reset_bank=parse_reset_bank(data.get("rateLimitResetCredits", data.get("rate_limit_reset_credits"))),
+                    warning=data.get("_quota_strip_warning"))
 
 
 def countdown(reset, now):
