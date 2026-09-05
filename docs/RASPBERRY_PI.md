@@ -95,13 +95,13 @@ Choose `right` for clockwise rotation or `left` for counterclockwise rotation. C
 
 ```conf
 Section "Monitor"
-    Identifier "Quota Strip"
+    Identifier "HDMI-1"
     Option "PreferredMode" "480x1920"
     Option "Rotate" "right"
 EndSection
 ```
 
-Xorg associates this monitor section with the single output and applies it before the dashboard starts. Restart LightDM to apply changes. This rotates the graphical session; the text boot console retains its own orientation. See the [Xorg monitor configuration reference](https://www.x.org/releases/current/doc/man/man5/xorg.conf.5.xhtml).
+The `Identifier` must match the connector reported by `xrandr` (`HDMI-1` in this example), so Xorg applies the section to that output before the dashboard starts. Restart LightDM to apply changes. This rotates the graphical session; the text boot console retains its own orientation. See the [Xorg monitor configuration reference](https://www.x.org/releases/current/doc/man/man5/xorg.conf.5.xhtml).
 
 ## Power checks
 
