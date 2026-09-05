@@ -40,6 +40,8 @@ class Window:
     resets_at: float | None
     seconds: float | None
     bucket: str = ""
+    observed_at: float | None = None
+    stale: bool = False
 
     def budget(self, now: float, zone: ZoneInfo):
         if self.seconds != WEEK or self.resets_at is None or self.resets_at <= now:
@@ -54,11 +56,74 @@ class Window:
 
 
 @dataclass(frozen=True)
+class ResetBank:
+    available_count: int
+    next_expiry: float | None = None
+    details_complete: bool = False
+
+    def needs_refresh(self, now):
+        return self.next_expiry is not None and self.next_expiry <= now
+
+    @classmethod
+    def from_dict(cls, data):
+        if not isinstance(data, dict):
+            return None
+        count = data.get("available_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            return None
+        expiry = timestamp(data.get("next_expiry"))
+        if data.get("next_expiry") is not None and expiry is None:
+            return cls(count)
+        if expiry is not None:
+            try:
+                datetime.fromtimestamp(expiry, timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                return cls(count)
+        return cls(count, expiry, data.get("details_complete") is True)
+
+
+def parse_reset_bank(data):
+    """Optional app-server metadata. Never retain credit IDs or descriptions."""
+    if not isinstance(data, dict):
+        return None
+    bank = ResetBank.from_dict({"available_count": data.get("availableCount")})
+    if bank is None:
+        return None
+    rows = data.get("credits")
+    if not isinstance(rows, list):
+        return bank
+    complete = len(rows) == bank.available_count
+    expiries = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("status") != "available":
+            complete = False
+            continue
+        if "expiresAt" not in row:
+            complete = False
+            continue
+        raw = row["expiresAt"]
+        if raw is None:  # The protocol explicitly defines null as no expiry.
+            continue
+        expiry = timestamp(raw)
+        try:
+            if expiry is None:
+                raise ValueError()
+            datetime.fromtimestamp(expiry, timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            complete = False
+            continue
+        expiries.append(expiry)
+    return ResetBank(bank.available_count, min(expiries) if expiries else None, complete)
+
+
+@dataclass(frozen=True)
 class Snapshot:
     provider: str
     windows: tuple[Window, ...]
     observed_at: float
     source: str = "account"
+    reset_bank: ResetBank | None = None
+    warning: str | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -77,8 +142,11 @@ class Snapshot:
                 raise ValueError("Invalid usage")
             windows.append(Window(str(w["key"]), str(w["label"]), used,
                                   timestamp(w.get("resets_at")), number(w.get("seconds")),
-                                  str(w.get("bucket", ""))))
-        return cls(data["provider"], tuple(windows), observed, str(data.get("source", "account")))
+                                  str(w.get("bucket", "")), timestamp(w.get("observed_at")),
+                                  w.get("stale") is True))
+        return cls(data["provider"], tuple(windows), observed, str(data.get("source", "account")),
+                   ResetBank.from_dict(data.get("reset_bank")),
+                   data.get("warning") if isinstance(data.get("warning"), str) else None)
 
 
 def duration_label(seconds):
@@ -188,7 +256,8 @@ def parse_codex(data, now):
             reset = timestamp(value.get("resetsAt", value.get("reset_at")))
             windows.append(Window(f"{bucket}:{slot}", duration_label(seconds), used,
                                   reset, seconds, str(name)))
-    return Snapshot("codex", tuple(windows), now)
+    return Snapshot("codex", tuple(windows), now,
+                    reset_bank=parse_reset_bank(data.get("rateLimitResetCredits")))
 
 
 def countdown(reset, now):

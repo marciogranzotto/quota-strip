@@ -12,7 +12,8 @@ from zoneinfo import ZoneInfo
 from quota_api import (CredentialStore, NoRedirect, Provider, QuotaError,
                        atomic_json, retry_seconds, token_record)
 from quota_auth import account_id_from_token, claude_login, codex_login, pkce_challenge
-from quota_model import Snapshot, Window, WEEK, countdown, parse_claude, parse_codex
+from quota_model import (ResetBank, Snapshot, Window, WEEK, countdown,
+                         parse_claude, parse_codex, parse_reset_bank)
 from quota_state import Reading, State
 
 
@@ -134,6 +135,62 @@ class ParserTests(unittest.TestCase):
         for used in [float("nan"), float("inf"), -1, True, "3"]:
             with self.subTest(used=used), self.assertRaises(ValueError):
                 parse_claude({"five_hour": {"utilization": used}}, 1)
+
+
+class ResetBankTests(unittest.TestCase):
+    def test_authoritative_count_with_capped_details(self):
+        bank = parse_reset_bank({"availableCount": 4, "credits": [
+            {"status": "available", "expiresAt": 1000},
+        ]})
+        self.assertEqual(bank, ResetBank(4, 1000, False))
+
+    def test_complete_details_choose_earliest_expiry(self):
+        bank = parse_reset_bank({"availableCount": 3, "credits": [
+            {"status": "available", "expiresAt": 2000},
+            {"status": "available", "expiresAt": None},
+            {"status": "available", "expiresAt": 1000},
+        ]})
+        self.assertEqual(bank, ResetBank(3, 1000, True))
+        self.assertFalse(bank.needs_refresh(999))
+        self.assertTrue(bank.needs_refresh(1000))
+        self.assertEqual(bank.available_count, 3)  # No inferred redemption/expiry count.
+
+    def test_count_only_and_zero_are_distinct_from_unavailable(self):
+        self.assertEqual(parse_reset_bank({"availableCount": 2, "credits": None}), ResetBank(2))
+        self.assertEqual(parse_reset_bank({"availableCount": 0, "credits": []}), ResetBank(0, None, True))
+        for value in (None, {}, {"availableCount": -1}, {"availableCount": True},
+                      {"availableCount": "3"}, {"availableCount": 1.5}):
+            with self.subTest(value=value):
+                self.assertIsNone(parse_reset_bank(value))
+
+    def test_malformed_optional_data_keeps_ordinary_quotas(self):
+        snap = parse_codex({"rateLimits": {"primary": {"usedPercent": 12}},
+                           "rateLimitResetCredits": {"availableCount": "bad"}}, 10)
+        self.assertEqual(snap.windows[0].used, 12)
+        self.assertIsNone(snap.reset_bank)
+        for row in (None, {"status": "redeemed", "expiresAt": 1000},
+                    {"status": "available", "expiresAt": "bad"},
+                    {"status": "available", "expiresAt": 1e100},
+                    {"status": "available"}):
+            with self.subTest(row=row):
+                self.assertEqual(parse_reset_bank({"availableCount": 1, "credits": [row]}), ResetBank(1))
+
+    def test_no_expiry_requires_complete_explicit_null_details(self):
+        bank = parse_reset_bank({"availableCount": 1, "credits": [
+            {"status": "available", "expiresAt": None},
+        ]})
+        self.assertEqual(bank, ResetBank(1, None, True))
+        self.assertFalse(parse_reset_bank({"availableCount": 1, "credits": []}).details_complete)
+
+    def test_snapshot_round_trip_strips_credit_identifiers(self):
+        snap = parse_codex({"rateLimits": {}, "rateLimitResetCredits": {
+            "availableCount": 1, "credits": [{"id": "test-private-id", "status": "available",
+            "title": "test-private-title", "expiresAt": 1000}]}}, 10)
+        encoded = snap.to_dict()
+        self.assertNotIn("test-private", json.dumps(encoded))
+        self.assertEqual(Snapshot.from_dict(encoded), snap)
+        del encoded["reset_bank"]
+        self.assertIsNone(Snapshot.from_dict(encoded).reset_bank)
 
 
 class StorageAndAuthTests(unittest.TestCase):

@@ -36,3 +36,15 @@ Standalone mode keeps appliance-owned credentials separate from local CLI stores
 Live macOS reads have been verified. Unit tests cover quotas, pacing, storage, staleness, and mocked authentication. A headless demo checks the native drawing path without using account data.
 
 Original Raspberry Pi B+ deployment, display timing, OS installation, unattended startup, and real standalone token rotation have not been validated. [Raspberry Pi operating systems](https://www.raspberrypi.com/software/operating-systems/) is the starting point for that later phase.
+
+## Banked reset metadata
+
+- [Official app-server account contract](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md): `account/rateLimits/read` includes optional `rateLimitResetCredits`, authoritative `availableCount`, and potentially capped `credits` rows. The installed CLI's generated JSON Schema was also checked. `expiresAt: null` means no expiry; a missing detail list means only the count is known.
+- [How banked Codex resets work](https://help.openai.com/en/articles/20001498-how-banked-codex-resets-work): saved resets can expire and are distinct from purchased usage credits and automatic resets.
+- [Claude Max limits](https://support.claude.com/en/articles/11049741-what-is-the-max-plan) and [Claude usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans): scheduled allowances and pay-as-you-go usage. As of 2026-09-05, the reviewed documentation and live Claude usage schema did not expose an equivalent saved-reset bank. This is a verification boundary, not a guarantee about every account or future rollout.
+
+The dashboard reads metadata only; it does not implement reset redemption. Ordinary usage remains available when optional bank metadata is missing or malformed.
+
+## Partial Claude readings
+
+Claude Code's documented status-line payload reports only the main five-hour and weekly windows. A successful fallback therefore cannot replace a complete account snapshot or clear an account error. The collector retains missing windows with their original observation times, marks them stale, and retries the account endpoint with exponential backoff while reading the local capture at the normal interval. A complete account response replaces the partial state and may remove quotas that are no longer reported.

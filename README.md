@@ -20,6 +20,7 @@ Built for macOS today, with a standalone Raspberry Pi appliance on the roadmap.
 
 - **Claude:** current five-hour usage, the overall weekly quota, and model-specific weekly limits such as **Fable**.
 - **Codex:** the quota windows reported by your ChatGPT account, including separate **Spark** limits when available.
+- **Banked Codex resets:** the available count and next expiry, read from the same account response.
 - **Weekly pacing:** an end-of-day allowance marker, reset countdowns, and how much room you have left today.
 - **Clear states:** purple for Fable, blue for other weekly meters, red for usage beyond today's allowance, and muted last-known data when a reading goes stale.
 
@@ -67,6 +68,16 @@ The allowance is rounded to the nearest integer and clamped to 0–100. Midnight
 
 Fable uses its own reported percentage and reset time. It also draws from Claude's overall allowance, so its meter is not extra capacity on top of the overall weekly quota.
 
+## Banked resets
+
+The Codex header shows saved usage-limit resets and the next expiry in your configured timezone. It reads the official app-server's `rateLimitResetCredits` summary; checking the count does not redeem a reset.
+
+The server's total is authoritative, even when it returns only some detail rows. Partial lists are labeled **Listed expiry** rather than claiming to show the next expiry across the whole bank. Missing data displays **Count unavailable**, never zero. When a known expiry passes or collection goes stale, the last count is marked as awaiting an update.
+
+Only the count, earliest supplied expiry, and detail-completeness flag enter the local snapshot. Credit identifiers and descriptions are discarded. This indicator currently requires the local Codex app-server source; the experimental direct collector does not fetch reset-bank metadata.
+
+No equivalent Claude banked-reset count has been verified. Claude's paid usage credits and automatic quota resets are separate concepts; the dashboard does not infer a bank from them.
+
 ## Configuration
 
 ```sh
@@ -94,7 +105,7 @@ The layout keeps two windows visible and rotates additional windows through the 
 
 ## Data sources and privacy
 
-**Claude** reads the existing Claude Code credentials file or macOS Keychain entry and requests account usage. It does not modify or refresh those credentials. If they expire, renew the login through Claude Code. An optional fallback reads `~/.claude/.debug/statusline-input.json` if an existing status-line setup already produces it; Quota Strip does not create or enable that capture. Fallback readings preserve their original age and do not include Fable.
+**Claude** reads the existing Claude Code credentials file or macOS Keychain entry and requests account usage. It does not modify or refresh those credentials. If they expire, renew the login through Claude Code. An optional fallback reads `~/.claude/.debug/statusline-input.json` if an existing status-line setup already produces it; Quota Strip does not create or enable that capture. The status line only reports the main windows. During an account failure, those windows keep updating while previously observed model quotas such as Fable remain visible with their original timestamps and a **Last known** label. The footer reports **PARTIAL** and the account error. With no previous model reading, the display shows model limits as unavailable. Account requests back off independently of local status-line reads.
 
 **Codex** launches the installed CLI's app-server, requests `account/rateLimits/read`, and stops that child process after the read. No coding task is started. The CLI manages its own account session.
 

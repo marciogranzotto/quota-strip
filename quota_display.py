@@ -48,7 +48,10 @@ def demo(now):
         "codex": {"primary": {"usedPercent": 54, "windowDurationMins": 10080, "resetsAt": now + 2*86400}},
         "spark": {"limitName": "Spark", "primary": {"usedPercent": 0, "windowDurationMins": 300, "resetsAt": now + 12000},
                   "secondary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": now + 5*86400}},
-    }}, now)
+    }, "rateLimitResetCredits": {"availableCount": 2, "credits": [
+        {"status": "available", "expiresAt": now + 3*86400},
+        {"status": "available", "expiresAt": now + 12*86400},
+    ]}}, now)
     return {"claude": Reading(claude), "codex": Reading(codex)}
 
 
@@ -90,15 +93,17 @@ class Display:
                               (x + min(width - 1, mark), y - 5), (x + min(width - 1, mark), y + 21), 3)
 
     def window(self, w, x, y, width, now, stale):
+        stale = stale or w.stale or (w.observed_at is not None and
+                (now - w.observed_at > self.stale_after or w.observed_at > now + 60))
         expired = w.expired(now)
-        budget = w.budget(now, self.zone)
+        budget = None if stale else w.budget(now, self.zone)
         unavailable = stale or expired
         accent = PURPLE if w.key == "seven_day_fable" else BLUE
         status = MUTED if unavailable else rate_color(w.used)
         if budget is not None and not unavailable:
             status = GREEN if w.used <= budget else RED
         label = (w.bucket + " / " if w.bucket else "") + w.label
-        label_color = PURPLE if w.key == "seven_day_fable" and not unavailable else MUTED
+        label_color = PURPLE if w.key == "seven_day_fable" else MUTED
         self.text(label.upper(), x, y + 5, 20, label_color, True, max_width=width-350)
         value = f"{rounded(w.used)}%"
         if budget is not None:
@@ -109,13 +114,37 @@ class Display:
         if expired:
             note = "Awaiting fresh quota"
         elif stale:
-            note = "Last known usage"
+            note = (f"Last known · {max(0, int((now-w.observed_at)//60))}m ago"
+                    if w.observed_at is not None else "Last known usage")
         elif budget is not None:
             delta = budget - w.used
             note = f"{abs(delta):.0f}% left today" if delta >= 0 else f"{abs(delta):.0f} pp over today's budget"
         else:
             note = f"{max(0, 100-w.used):.0f}% remaining"
         self.text(note, x + width, y + 72, 18, status, right=True, max_width=width/2-10)
+
+    def reset_bank(self, bank, x, now, stale):
+        if bank is None:
+            self.text("BANKED RESETS —", x, 38, 19, MUTED, True)
+            self.text("Count unavailable", x, 63, 15, MUTED)
+            return
+        old = stale or bank.needs_refresh(now)
+        color = MUTED if old or not bank.available_count else GREEN
+        self.text(f"{bank.available_count} BANKED RESET" + ("S" if bank.available_count != 1 else ""),
+                  x, 38, 19, color, True, max_width=360)
+        if old:
+            note = "Last known · awaiting update"
+        elif bank.available_count == 0:
+            note = "None available"
+        elif bank.next_expiry is not None:
+            expiry = datetime.fromtimestamp(bank.next_expiry, self.zone)
+            prefix = "Next expires" if bank.details_complete else "Listed expiry"
+            note = f"{prefix} {expiry:%d %b · %H:%M}"
+            if bank.next_expiry - now <= 86400:
+                color = ORANGE
+        else:
+            note = "No expiry" if bank.details_complete else "Expiry unavailable"
+        self.text(note, x, 63, 15, color, max_width=360)
 
     def panel(self, name, reading, x, now):
         self.pg.draw.rect(self.surface, PANEL, (x, 20, 928, 414), border_radius=14)
@@ -124,11 +153,15 @@ class Display:
         self.text("MAX 20×" if name == "claude" else "CHATGPT PRO", x + 904, 44, 19, MUTED, right=True)
         snapshot = reading.snapshot
         stale = reading.stale(now, self.stale_after)
+        if name == "codex":
+            self.reset_bank(snapshot.reset_bank if snapshot else None, x + 330, now, stale)
         if snapshot is None:
             self.text("Waiting for quota", x + 30, 159, 35, FG, True)
             self.text(reading.error or "Connecting…", x + 30, 218, 23, MUTED, max_width=865)
             return
         windows = list(snapshot.windows)
+        missing_models = (snapshot.source == "status line" and snapshot.warning and
+                          not any(w.key.startswith("seven_day_") for w in windows))
         if not windows:
             self.text("No quota windows reported", x + 30, 184, 30, MUTED)
         # Keep the first two windows visible; rotate only overflow in slot three.
@@ -136,15 +169,21 @@ class Display:
             slot = int(now // 15) % (len(windows) - 2)
             windows = windows[:2] + [windows[2 + slot]]
             self.text(f"More limits {slot+1}/{len(snapshot.windows)-2}", x + 904, 85, 14, MUTED, right=True)
-        gap = 146 if len(windows) <= 2 else 106
-        start = 115 if len(windows) <= 2 else 93
+        slots = len(windows) + bool(missing_models)
+        gap = 146 if slots <= 2 else 106
+        start = 115 if slots <= 2 else 93
         for index, w in enumerate(windows):
             self.window(w, x + 30, start + index * gap, 868, now, stale)
+        if missing_models:
+            y = start + len(windows) * gap
+            self.text("MODEL WEEKLY LIMITS", x + 30, y + 5, 20, MUTED, True)
+            self.text("Unavailable until account data returns", x + 30, y + 50, 20, MUTED)
         age = max(0, int((now - snapshot.observed_at) // 60))
-        text = f"{'STALE' if stale else 'UPDATED'}  {age}m ago  ·  {snapshot.source}"
-        if reading.error:
-            text += "  ·  " + reading.error
-        self.text(text, x + 30, 407, 14, ORANGE if stale else MUTED, max_width=868)
+        text = f"{'STALE' if stale else 'PARTIAL' if snapshot.warning else 'UPDATED'}  {age}m ago  ·  {snapshot.source}"
+        issue = reading.error or snapshot.warning
+        if issue:
+            text += "  ·  " + issue
+        self.text(text, x + 30, 407, 14, ORANGE if stale or issue else MUTED, max_width=868)
 
     def render(self, readings, now, sample=False):
         self.surface.fill(BG)
@@ -188,7 +227,7 @@ def main():
                 provider = local_provider(name) if args.source == "local" else Provider(name)
                 result[name] = provider.fetch().to_dict()
             except QuotaError as exc:
-                result[name] = {"error": str(exc)}
+                result[name] = exc.fallback.to_dict() if exc.fallback else {"error": str(exc)}
                 failed = True
         print(json.dumps(result, indent=2))
         return int(failed)

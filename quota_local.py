@@ -15,10 +15,26 @@ from quota_model import parse_claude, parse_codex
 
 
 class LocalClaude:
+    def __init__(self, monotonic=time.monotonic):
+        self.monotonic = monotonic
+        self.next_attempt = 0
+        self.backoff = 120
+        self.last_error = None
+
     def fetch(self):
-        try:
-            return self.account_usage()
-        except QuotaError as original:
+        now = self.monotonic()
+        if now >= self.next_attempt:
+            try:
+                snapshot = self.account_usage()
+                self.backoff = 120
+                self.last_error = None
+                return snapshot
+            except QuotaError as exc:
+                self.last_error = exc
+                self.backoff = min(max(self.backoff * 2, 300 if exc.status == 429 else 0), 1800)
+                self.next_attempt = self.monotonic() + max(self.backoff, exc.retry_after)
+        original = self.last_error
+        if original is not None:
             # The user's existing status line already saves the official JSON.
             # Read that capture without changing settings or invoking inference.
             path = Path.home() / ".claude/.debug/statusline-input.json"
@@ -30,9 +46,13 @@ class LocalClaude:
                         w = captured[key]
                         data[key] = {"utilization": w.get("used_percentage"), "resets_at": w.get("resets_at")}
                 snap = parse_claude(data, path.stat().st_mtime)
-                return replace(snap, source="status line")
+                fallback = replace(snap, source="status line", warning=str(original))
             except (OSError, ValueError, TypeError):
                 raise original
+            # A partial reading is still an account failure. Keep that signal
+            # while allowing the status line to refresh during account backoff.
+            raise QuotaError(str(original), original.status,
+                             max(0, self.next_attempt - self.monotonic()), fallback) from None
 
     def account_usage(self):
         path = Path.home() / ".claude/.credentials.json"

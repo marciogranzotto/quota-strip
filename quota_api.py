@@ -27,9 +27,10 @@ PROVIDERS = {
 
 
 class QuotaError(Exception):
-    def __init__(self, message, status=None, retry_after=0):
+    def __init__(self, message, status=None, retry_after=0, fallback=None):
         super().__init__(message)
         self.status, self.retry_after = status, retry_after
+        self.fallback = fallback
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):

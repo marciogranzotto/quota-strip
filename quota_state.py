@@ -1,6 +1,6 @@
 """Independent provider polling and last-known-good snapshots."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import threading
 import time
@@ -48,6 +48,19 @@ class State:
         with self.lock:
             self.reading = Reading(self.reading.snapshot, error)
 
+    def partial(self, snapshot):
+        """Merge an incomplete source without refreshing missing windows' ages."""
+        previous = self.get().snapshot
+        if previous is not None:
+            present = {w.key for w in snapshot.windows}
+            retained = tuple(
+                replace(w, stale=True, observed_at=(w.observed_at if w.observed_at is not None
+                                                    else previous.observed_at))
+                for w in previous.windows if w.key not in present
+            )
+            snapshot = replace(snapshot, windows=snapshot.windows + retained)
+        self.success(snapshot)
+
 
 def poll(state, stop, interval=120, home=None, source="standalone"):
     if source == "local":
@@ -62,9 +75,15 @@ def poll(state, stop, interval=120, home=None, source="standalone"):
             backoff = interval
             wait = interval
         except QuotaError as exc:
-            state.failure(str(exc))
-            backoff = min(backoff * 2, 1800)
-            wait = max(backoff, exc.retry_after)
+            if exc.fallback is not None:
+                state.partial(exc.fallback)
+                # LocalClaude separately backs off the failing account endpoint.
+                # Its local status-line source can still update every interval.
+                wait = interval
+            else:
+                state.failure(str(exc))
+                backoff = min(backoff * 2, 1800)
+                wait = max(backoff, exc.retry_after)
         except Exception:
             # Keep the screen alive, but never expose arbitrary exception data
             # that may contain credentials or a provider's response body.
