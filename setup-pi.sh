@@ -44,6 +44,7 @@ install -m 0644 assets/README.md assets/LICENSE* /opt/quota-strip/assets/
 install -D -m 0755 deploy/pi/quota-strip-session /usr/local/bin/quota-strip-session
 install -D -m 0644 deploy/pi/quota-strip.desktop /usr/share/xsessions/quota-strip.desktop
 install -D -m 0644 deploy/pi/quota-strip.service /etc/systemd/user/quota-strip.service
+install -D -m 0644 deploy/pi/quota-strip-session.target /etc/systemd/user/quota-strip-session.target
 install -d -m 0755 /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/90-quota-strip.conf <<CONFIG
 [Seat:*]

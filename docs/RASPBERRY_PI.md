@@ -2,7 +2,7 @@
 
 Target: **Raspberry Pi 3 Model B v1.2**, a 1920 × 480 HDMI strip, and Raspberry Pi OS Lite **64-bit** (Trixie). The Python/Pygame application talks directly to provider account endpoints. A Mac, browser, or coding CLI is not needed during normal operation.
 
-The installer and Linux rendering are checked in development. Physical display timing, first boot, and power/network recovery must still be verified on the actual hardware.
+First boot, standalone quota collection, the rotated 1920 × 480 display, app crash recovery, and graphical session shutdown have been verified on a Pi 3B and a physical strip panel. Reboot, network recovery, and long-running operation remain part of the acceptance checks below; reliable power is required.
 
 ## 1. Prepare the microSD
 
@@ -40,7 +40,7 @@ cd quota-strip
 sudo ./setup-pi.sh
 ```
 
-The installer uses distribution packages for Python, Pygame, fonts, Xorg, LightDM, and the systemd user session. It installs an explicit list of application files under `/opt/quota-strip`, configures LightDM to sign the appliance user into the dashboard, and installs a systemd user service to restart the app after an exit or crash. It does not copy checkout credentials or change HDMI timings. It stops the graphical session while updating and leaves it stopped until sign-in is ready.
+The installer uses distribution packages for Python, Pygame, fonts, Xorg, LightDM, and the systemd user session. It installs an explicit list of application files under `/opt/quota-strip`, configures LightDM to sign the appliance user into the dashboard, and installs a systemd user service to restart the app after an exit or crash. A separate session target stays active while the app restarts, so a crash does not return to the login screen; stopping the graphical session also stops the app. It does not copy checkout credentials or change HDMI timings. It stops the graphical session while updating and leaves it stopped until sign-in is ready.
 
 ## 3. Sign in as the appliance user
 

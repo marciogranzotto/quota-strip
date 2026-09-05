@@ -1,5 +1,6 @@
 [Unit]
 Description=Quota Strip native dashboard
+PartOf=quota-strip-session.target
 StartLimitIntervalSec=0
 
 [Service]

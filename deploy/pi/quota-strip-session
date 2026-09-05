@@ -6,4 +6,9 @@ xset -dpms
 xset s noblank
 systemctl --user import-environment DISPLAY XAUTHORITY
 systemctl --user daemon-reload
-exec systemctl --user start --wait quota-strip.service
+# Waiting on the app itself ends the X session during a crash/restart.
+# The target stays active across app failures and owns session shutdown.
+trap 'systemctl --user stop quota-strip-session.target' EXIT
+trap 'exit 0' HUP INT TERM
+systemctl --user start --wait quota-strip-session.target &
+wait "$!"
