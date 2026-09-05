@@ -3,3 +3,22 @@ __pycache__/
 *.swp
 .DS_Store
 .venv/
+.local-config.json
+*-auth.json
+*-snapshot.json
+*.log
+*.pid
+dist/
+
+# Local secrets and captured account data
+.env
+.env.*
+!.env.example
+.credentials.json
+auth.json
+credentials.json
+*.pem
+*.key
+*live*.png
+*live*.jpg
+*live*.json

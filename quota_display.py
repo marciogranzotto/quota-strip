@@ -1,310 +1,245 @@
 #!/usr/bin/env python3
-"""Fullscreen Claude quota display for a 640x480 screen (Raspberry Pi kiosk).
-
-Big horizontal bars + clock. Data is fetched in a background thread so the
-clock stays smooth and a network hiccup never freezes the screen.
-"""
-
+"""1920x480 Claude / Codex quota strip. Pygame UI; stdlib collectors."""
 from __future__ import annotations
-
-import datetime as dt
+import argparse
+from datetime import datetime
+import json
 import os
+from pathlib import Path
+import signal
 import sys
 import threading
 import time
-import urllib.error
+from zoneinfo import ZoneInfo
 
-import pygame
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+from quota_model import Snapshot, Window, WEEK, countdown, rounded
+from quota_state import Reading, State, poll
 
-import quota_api
-
-# ---- layout / theme -------------------------------------------------------
-WIDTH, HEIGHT = 640, 480
-PAD = 28
-POLL_INTERVAL = 5 * 60      # seconds between usage fetches (quotas move slowly)
-MAX_BACKOFF = 30 * 60       # cap for exponential backoff after errors
-STALE_AFTER = 20 * 60       # seconds before cached data is flagged stale
-
-BG = (16, 18, 24)
-FG = (235, 237, 243)
-MUTED = (120, 126, 140)
-TRACK = (38, 42, 52)
-ACCENT = (210, 120, 70)     # Claude-ish terracotta for the title
-
-# utilization thresholds -> bar colour
-GREEN = (60, 190, 120)
-YELLOW = (220, 200, 70)
-ORANGE = (230, 150, 60)
-RED = (225, 80, 80)
+WIDTH, HEIGHT = 1920, 480
+BG = (11, 16, 22)
+PANEL = (18, 25, 33)
+TRACK = (39, 49, 59)
+FG = (231, 238, 242)
+MUTED = (142, 158, 170)
+BLUE = (120, 205, 239)
+PURPLE = (194, 157, 245)
+GREEN = (148, 213, 160)
+RED = (248, 115, 114)
+ORANGE = (238, 171, 103)
+YELLOW = (234, 210, 128)
 
 
-def bar_color(pct: float) -> tuple[int, int, int]:
-    if pct >= 95:
-        return RED
-    if pct >= 80:
-        return ORANGE
-    if pct >= 50:
-        return YELLOW
-    return GREEN
+def rate_color(used):
+    return RED if used >= 95 else ORANGE if used >= 75 else YELLOW if used >= 50 else GREEN
 
 
-# ---- shared state between fetch thread and render loop --------------------
-class State:
-    def __init__(self) -> None:
-        self.lock = threading.Lock()
-        self.usage: dict | None = None
-        self.last_success: float = 0.0       # wall clock, for display
-        self.last_success_mono: float = 0.0  # monotonic, for age/staleness
-        self.error: str | None = None
-
-    def update_ok(self, usage: dict) -> None:
-        with self.lock:
-            self.usage = usage
-            self.last_success = time.time()
-            self.last_success_mono = time.monotonic()
-            self.error = None
-
-    def update_err(self, msg: str) -> None:
-        with self.lock:
-            self.error = msg
-
-    def snapshot(self):
-        with self.lock:
-            return self.usage, self.last_success, self.last_success_mono, self.error
+def demo(now):
+    # Synthetic examples only: demo mode never reads credentials or account data.
+    from quota_model import parse_claude, parse_codex
+    claude = parse_claude({
+        "five_hour": {"utilization": 32, "resets_at": now + 2*3600},
+        "seven_day": {"utilization": 24, "resets_at": now + 2*86400 + 15*3600 + 11*60},
+        "limits": [{"kind": "weekly_scoped", "percent": 12,
+                    "resets_at": now + 2*86400 + 15*3600 + 11*60,
+                    "scope": {"model": {"display_name": "Fable"}}}],
+    }, now)
+    codex = parse_codex({"rateLimitsByLimitId": {
+        "codex": {"primary": {"usedPercent": 54, "windowDurationMins": 10080, "resetsAt": now + 2*86400}},
+        "spark": {"limitName": "Spark", "primary": {"usedPercent": 0, "windowDurationMins": 300, "resetsAt": now + 12000},
+                  "secondary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": now + 5*86400}},
+    }}, now)
+    return {"claude": Reading(claude), "codex": Reading(codex)}
 
 
-def _retry_after_seconds(exc: urllib.error.HTTPError) -> float | None:
-    """Parse a Retry-After header (delta-seconds form) if the server sent one."""
-    value = exc.headers.get("Retry-After") if exc.headers else None
-    if value and value.strip().isdigit():
-        return float(value.strip())
-    return None
-
-
-def fetch_loop(state: State, stop: threading.Event) -> None:
-    """Poll the usage endpoint, backing off exponentially on errors so we never
-    hammer the API — and honouring Retry-After when we're rate-limited (429)."""
-    backoff = POLL_INTERVAL
-    while not stop.is_set():
-        try:
-            state.update_ok(quota_api.fetch_usage())
-            backoff = POLL_INTERVAL
-            wait = POLL_INTERVAL
-        except urllib.error.HTTPError as exc:
-            state.update_err(str(exc))
-            backoff = min(backoff * 2, MAX_BACKOFF)
-            # On a rate-limit, prefer the server's own Retry-After hint.
-            wait = backoff
-            if exc.code == 429:
-                wait = max(_retry_after_seconds(exc) or 0, backoff)
-        except Exception as exc:  # noqa: BLE001 - keep the display alive
-            state.update_err(str(exc))
-            backoff = min(backoff * 2, MAX_BACKOFF)
-            wait = backoff
-        stop.wait(wait)
-
-
-# ---- formatting helpers ---------------------------------------------------
-def parse_reset(iso: str | None) -> dt.datetime | None:
-    if not iso:
-        return None
-    try:
-        return dt.datetime.fromisoformat(iso).astimezone()
-    except ValueError:
-        return None
-
-
-def fmt_reset_short(when: dt.datetime | None) -> str:
-    if when is None:
-        return ""
-    now = dt.datetime.now().astimezone()
-    if when.date() == now.date():
-        return f"resets {when:%H:%M}"
-    if (when.date() - now.date()).days == 1:
-        return f"resets tomorrow {when:%H:%M}"
-    # Build the day without %-d, which is glibc-only.
-    return f"resets {when:%a %b} {when.day}"
-
-
-# ---- drawing --------------------------------------------------------------
 class Display:
-    def __init__(self, screen: pygame.Surface) -> None:
-        self.screen = screen
-        self.f_title = self._font(40, bold=True)
-        self.f_clock = self._font(40, bold=True)
-        self.f_label = self._font(26, bold=True)
-        self.f_pct = self._font(30, bold=True)
-        self.f_small = self._font(20)
-        self.f_tiny = self._font(16)
+    def __init__(self, surface, zone, stale_after=600):
+        import pygame
+        self.pg, self.surface, self.zone = pygame, surface, zone
+        self.stale_after = stale_after
+        self.fonts = {}
+        assets = Path(__file__).resolve().parent / "assets"
+        self.logos = {
+            name: pygame.image.load(str(assets / filename)).convert_alpha()
+            for name, filename in (("claude", "claude.png"), ("codex", "chatgpt.png"))
+        }
 
-    @staticmethod
-    def _font(size: int, bold: bool = False) -> pygame.font.Font:
-        return pygame.font.SysFont("dejavusans", size, bold=bold)
+    def text(self, value, x, y, size=22, color=FG, bold=False, right=False, max_width=None):
+        key = (size, bold)
+        if key not in self.fonts:
+            self.fonts[key] = self.pg.font.SysFont("dejavusans", size, bold=bold)
+        font = self.fonts[key]
+        value = str(value)
+        if max_width is not None:
+            while value and font.size(value)[0] > max_width:
+                value = value[:-2] + "…" if len(value) > 1 else ""
+        image = font.render(value, True, color)
+        self.surface.blit(image, image.get_rect(topright=(x, y)) if right else (x, y))
 
-    def _text(self, surf_font, text, color, x, y, right=False, center=False):
-        img = surf_font.render(text, True, color)
-        rect = img.get_rect()
-        if right:
-            rect.topright = (x, y)
-        elif center:
-            rect.midtop = (x, y)
+    def bar(self, x, y, width, used, budget=None, unavailable=False, accent=BLUE):
+        self.pg.draw.rect(self.surface, TRACK, (x, y, width, 16), border_radius=4)
+        fill = int(width * max(0, min(100, used)) / 100)
+        color = MUTED if unavailable else accent if budget is not None else rate_color(used)
+        if fill:
+            self.pg.draw.rect(self.surface, color, (x, y, fill, 16), border_radius=min(4, fill // 2))
+        if budget is not None and not unavailable:
+            mark = int(width * budget / 100)
+            if used > budget and fill > mark:
+                self.pg.draw.rect(self.surface, RED, (x + mark, y, fill - mark, 16))
+            self.pg.draw.line(self.surface, RED if used > budget else GREEN,
+                              (x + min(width - 1, mark), y - 5), (x + min(width - 1, mark), y + 21), 3)
+
+    def window(self, w, x, y, width, now, stale):
+        expired = w.expired(now)
+        budget = w.budget(now, self.zone)
+        unavailable = stale or expired
+        accent = PURPLE if w.key == "seven_day_fable" else BLUE
+        status = MUTED if unavailable else rate_color(w.used)
+        if budget is not None and not unavailable:
+            status = GREEN if w.used <= budget else RED
+        label = (w.bucket + " / " if w.bucket else "") + w.label
+        label_color = PURPLE if w.key == "seven_day_fable" and not unavailable else MUTED
+        self.text(label.upper(), x, y + 5, 20, label_color, True, max_width=width-350)
+        value = f"{rounded(w.used)}%"
+        if budget is not None:
+            value += f" / {budget}%"
+        self.text(value, x + width, y - 6, 38, status, True, right=True)
+        self.bar(x, y + 45, width, w.used, budget, unavailable, accent)
+        self.text(countdown(w.resets_at, now), x, y + 72, 18, MUTED, max_width=width/2)
+        if expired:
+            note = "Awaiting fresh quota"
+        elif stale:
+            note = "Last known usage"
+        elif budget is not None:
+            delta = budget - w.used
+            note = f"{abs(delta):.0f}% left today" if delta >= 0 else f"{abs(delta):.0f} pp over today's budget"
         else:
-            rect.topleft = (x, y)
-        self.screen.blit(img, rect)
-        return rect
+            note = f"{max(0, 100-w.used):.0f}% remaining"
+        self.text(note, x + width, y + 72, 18, status, right=True, max_width=width/2-10)
 
-    def _bar(self, x, y, w, h, pct):
-        pct = max(0.0, min(100.0, pct))
-        radius = h // 2
-        pygame.draw.rect(self.screen, TRACK, (x, y, w, h), border_radius=radius)
-        fill_w = int(w * pct / 100)
-        if fill_w >= h:
-            pygame.draw.rect(self.screen, bar_color(pct), (x, y, fill_w, h),
-                             border_radius=radius)
-        elif fill_w > 0:
-            pygame.draw.rect(self.screen, bar_color(pct), (x, y, fill_w, h),
-                             border_radius=min(radius, fill_w // 2 or 1))
-
-    def quota_block(self, y, label, pct, reset_text):
-        self._text(self.f_label, label, FG, PAD, y)
-        self._text(self.f_pct, f"{pct:.0f}%", bar_color(pct), WIDTH - PAD, y - 2,
-                   right=True)
-        self._bar(PAD, y + 36, WIDTH - 2 * PAD, 26, pct)
-        if reset_text:
-            self._text(self.f_small, reset_text, MUTED, PAD, y + 70)
-
-    @staticmethod
-    def signature(state: State) -> tuple:
-        """A cheap fingerprint of everything on screen, so the main loop can
-        skip the redraw+flip when nothing has changed (keeps CPU near idle)."""
-        usage, last_success, last_success_mono, error = state.snapshot()
-        now = dt.datetime.now().astimezone()
-        stale = bool(last_success_mono) and (
-            time.monotonic() - last_success_mono > STALE_AFTER
-        )
-        return (now.strftime("%H:%M:%S"), last_success, error, usage is None, stale)
-
-    def render(self, state: State) -> None:
-        usage, last_success, last_success_mono, error = state.snapshot()
-        self.screen.fill(BG)
-
-        # header
-        now = dt.datetime.now().astimezone()
-        self._text(self.f_title, "CLAUDE", ACCENT, PAD, PAD - 6)
-        self._text(self.f_clock, now.strftime("%H:%M:%S"), FG, WIDTH - PAD, PAD - 6,
-                   right=True)
-        pygame.draw.line(self.screen, TRACK, (PAD, PAD + 48),
-                         (WIDTH - PAD, PAD + 48), 2)
-
-        if usage is None:
-            msg = (error or "connecting...")[:42]
-            self._text(self.f_label, msg, MUTED, WIDTH // 2, HEIGHT // 2 - 20,
-                       center=True)
+    def panel(self, name, reading, x, now):
+        self.pg.draw.rect(self.surface, PANEL, (x, 20, 928, 414), border_radius=14)
+        self.surface.blit(self.logos[name], (x + 26, 34))
+        self.text("CLAUDE" if name == "claude" else "CODEX", x + 86, 36, 30, FG, True)
+        self.text("MAX 20×" if name == "claude" else "CHATGPT PRO", x + 904, 44, 19, MUTED, right=True)
+        snapshot = reading.snapshot
+        stale = reading.stale(now, self.stale_after)
+        if snapshot is None:
+            self.text("Waiting for quota", x + 30, 159, 35, FG, True)
+            self.text(reading.error or "Connecting…", x + 30, 218, 23, MUTED, max_width=865)
             return
+        windows = list(snapshot.windows)
+        if not windows:
+            self.text("No quota windows reported", x + 30, 184, 30, MUTED)
+        # Keep the first two windows visible; rotate only overflow in slot three.
+        if len(windows) > 3:
+            slot = int(now // 15) % (len(windows) - 2)
+            windows = windows[:2] + [windows[2 + slot]]
+            self.text(f"More limits {slot+1}/{len(snapshot.windows)-2}", x + 904, 85, 14, MUTED, right=True)
+        gap = 146 if len(windows) <= 2 else 106
+        start = 115 if len(windows) <= 2 else 93
+        for index, w in enumerate(windows):
+            self.window(w, x + 30, start + index * gap, 868, now, stale)
+        age = max(0, int((now - snapshot.observed_at) // 60))
+        text = f"{'STALE' if stale else 'UPDATED'}  {age}m ago  ·  {snapshot.source}"
+        if reading.error:
+            text += "  ·  " + reading.error
+        self.text(text, x + 30, 407, 14, ORANGE if stale else MUTED, max_width=868)
 
-        five = usage.get("five_hour") or {}
-        seven = usage.get("seven_day") or {}
-        extra = usage.get("extra_usage") or {}
-
-        self.quota_block(
-            108, "5-HOUR",
-            float(five.get("utilization") or 0),
-            fmt_reset_short(parse_reset(five.get("resets_at"))),
-        )
-        self.quota_block(
-            228, "7-DAY",
-            float(seven.get("utilization") or 0),
-            fmt_reset_short(parse_reset(seven.get("resets_at"))),
-        )
-
-        # credits
-        if extra.get("is_enabled"):
-            used = float(extra.get("used_credits") or 0)
-            limit = float(extra.get("monthly_limit") or 0)
-            cur = extra.get("currency", "USD")
-            sym = "$" if cur == "USD" else f"{cur} "
-            self._text(self.f_label, "CREDITS", FG, PAD, 348)
-            self._text(self.f_pct, f"{sym}{used:.0f} / {sym}{limit:.0f}", FG,
-                       WIDTH - PAD, 346, right=True)
-            pct = (used / limit * 100) if limit else 0
-            self._bar(PAD, 384, WIDTH - 2 * PAD, 18, pct)
-
-        # status footer
-        if error and last_success:
-            footer = f"stale - {error[:46]}"
-            color = ORANGE
-        elif last_success:
-            age = time.monotonic() - last_success_mono
-            stale = age > STALE_AFTER
-            footer = f"updated {dt.datetime.fromtimestamp(last_success):%H:%M:%S}"
-            if stale:
-                footer += "  (stale)"
-            color = ORANGE if stale else MUTED
-        else:
-            footer = ""
-            color = MUTED
-        if footer:
-            self._text(self.f_tiny, footer, color, WIDTH // 2, HEIGHT - 28,
-                       center=True)
+    def render(self, readings, now, sample=False):
+        self.surface.fill(BG)
+        self.panel("claude", readings.get("claude", Reading()), 20, now)
+        self.panel("codex", readings.get("codex", Reading()), 972, now)
+        self.text("QUOTA STRIP", 30, 449, 16, MUTED, True)
+        self.text("SAMPLE DATA" if sample else "Weekly marker = allowance by local midnight", 210, 449, 16, ORANGE if sample else MUTED)
+        local = datetime.fromtimestamp(now, self.zone)
+        self.text(f"{self.zone.key}   {local:%a %d %b  %H:%M}", 1890, 445, 21, MUTED, right=True)
 
 
-def _want_windowed(argv: list[str]) -> bool:
-    """Fullscreen kiosk by default; windowed on macOS (dev) or when asked.
-
-    `--windowed`/`--fullscreen` win, then $QUOTA_WINDOWED, then the platform
-    default — so the Pi stays fullscreen while a Mac comes up in a window.
-    """
-    if "--windowed" in argv:
-        return True
-    if "--fullscreen" in argv:
-        return False
-    env = os.environ.get("QUOTA_WINDOWED")
-    if env is not None:
-        return env.strip().lower() not in ("", "0", "false", "no")
-    return sys.platform == "darwin"
-
-
-def main() -> None:
-    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-    windowed = _want_windowed(sys.argv[1:])
-    pygame.init()
-    # Hide the cursor in the kiosk; keep it in a window so you can move/close it.
-    pygame.mouse.set_visible(windowed)
-    # No SCALED: the window already matches the native 640x480, so scaling
-    # would just burn CPU on a per-frame blit.
-    flags = 0 if windowed else pygame.FULLSCREEN
-    screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-    pygame.display.set_caption("Claude Quota")
-
-    state = State()
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--demo", action="store_true")
+    parser.add_argument("--snapshot", type=Path, help="Render sanitized saved readings; no network")
+    parser.add_argument("--screenshot", type=Path, help="Save PNG and exit; no network")
+    parser.add_argument("--json", action="store_true", help="One live, normalized quota read; no GUI")
+    parser.add_argument("--windowed", action="store_true")
+    parser.add_argument("--source", choices=["local", "standalone"], default="local" if sys.platform == "darwin" else "standalone")
+    parser.add_argument("--timezone", default=os.environ.get("QUOTA_TIMEZONE", "America/Sao_Paulo"))
+    parser.add_argument("--interval", type=int, default=120)
+    parser.add_argument("--at", help="ISO time for deterministic previews")
+    args = parser.parse_args()
+    zone = ZoneInfo(args.timezone)
+    if args.interval < 60:
+        parser.error("Polling interval must be at least 60 seconds")
+    if args.at:
+        specified = datetime.fromisoformat(args.at)
+        if specified.tzinfo is None:
+            parser.error("--at requires a timezone offset")
+        if not (args.demo or args.snapshot):
+            parser.error("--at is only for demo/snapshot previews")
+    fixed_now = specified.timestamp() if args.at else None
+    now = fixed_now if fixed_now is not None else time.time()
+    if args.json:
+        from quota_api import Provider, QuotaError
+        result, failed = {}, False
+        for name in ("claude", "codex"):
+            try:
+                from quota_local import local_provider
+                provider = local_provider(name) if args.source == "local" else Provider(name)
+                result[name] = provider.fetch().to_dict()
+            except QuotaError as exc:
+                result[name] = {"error": str(exc)}
+                failed = True
+        print(json.dumps(result, indent=2))
+        return int(failed)
+    import pygame
+    if args.screenshot:
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
+    pygame.display.init()
+    pygame.font.init()
+    windowed = args.windowed or args.screenshot or sys.platform == "darwin"
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), 0 if windowed else pygame.FULLSCREEN)
+    pygame.display.set_caption("Quota Strip")
+    pygame.mouse.set_visible(bool(windowed))
+    display = Display(screen, zone, max(600, args.interval * 3))
     stop = threading.Event()
-    thread = threading.Thread(target=fetch_loop, args=(state, stop), daemon=True)
-    thread.start()
-
-    display = Display(screen)
+    states = {}
+    saved = None
+    if args.snapshot:
+        payload = json.loads(args.snapshot.read_text())
+        saved = {name: Reading(Snapshot.from_dict(value)) for name, value in payload.items()}
+    elif args.demo:
+        saved = demo(now)
+    elif not args.screenshot:
+        for name in ("claude", "codex"):
+            states[name] = State(name)
+            threading.Thread(target=poll, args=(states[name], stop, args.interval, None, args.source), daemon=True).start()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    last = None
     clock = pygame.time.Clock()
-    last_sig = None
-    running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN and event.key in (
-                pygame.K_ESCAPE, pygame.K_q,
-            ):
-                running = False
-        # Only repaint when something visible actually changed (the clock ticks
-        # once a second), so the loop is effectively idle the rest of the time.
-        sig = display.signature(state)
-        if sig != last_sig:
-            display.render(state)
-            pygame.display.flip()
-            last_sig = sig
-        clock.tick(10)  # poll for input/clock changes 10x/s; redraw is gated
-
-    stop.set()
-    pygame.quit()
+    try:
+        while not stop.is_set():
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key in (pygame.K_ESCAPE, pygame.K_q)):
+                    stop.set()
+            now = fixed_now if fixed_now is not None else time.time()
+            readings = saved if saved is not None else {n: s.get() for n, s in states.items()}
+            signature = (int(now // 15), tuple(readings.items()))
+            if signature != last:
+                display.render(readings, now, args.demo)
+                pygame.display.flip()
+                last = signature
+            if args.screenshot:
+                args.screenshot.parent.mkdir(parents=True, exist_ok=True)
+                pygame.image.save(screen, str(args.screenshot))
+                break
+            clock.tick(4)
+    finally:
+        stop.set()
+        pygame.quit()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

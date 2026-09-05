@@ -1,250 +1,147 @@
-# Claude Quota Display
+<div align="center">
 
-**A tiny, always-on dashboard for your Claude usage — running on a Raspberry Pi in an adorable little Macintosh.**
+# Quota Strip
 
-<p align="center">
-  <img src="docs/full_build.jpg" alt="The finished build: a Raspberry Pi in a 3D-printed Macintosh Plus" width="360">
-</p>
+**Your Claude and Codex limits, always in sight.**
 
-![The display running on a 640×480 screen](docs/screenshot.png)
+A compact, native dashboard for a 1920 × 480 strip display.<br>
+Built for macOS today, with a standalone Raspberry Pi appliance on the roadmap.
 
----
+[![CI](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml/badge.svg)](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-If you live in Claude Code all day, you've probably had the experience of
-slamming into your usage limit mid-thought. The `/usage` command tells you where
-you stand, but only when you stop and ask. I wanted something ambient — a little
-gauge sitting on my desk that I could glance at the way you glance at a clock.
+![Quota Strip showing Claude, Fable, Codex, and Spark meters with illustrative data](docs/preview.png)
 
-So I put one inside a 3D-printed Macintosh Plus the size of a coffee mug. It
-boots straight into a fullscreen readout of my **5-hour window**, my **7-day
-window**, and my **extra-usage credits**, and it refreshes itself every minute.
-No browser, no cloud, no dashboard service — just ~250 lines of Python drawing
-directly to a tiny screen. This repo is everything you need to build your own.
+*The preview uses synthetic demo data. No account is needed to try it.*
 
----
+</div>
 
 ## What it shows
 
-The app reads the same usage data that powers Claude Code's `/usage` command and
-renders it as big, across-the-room-readable bars:
+- **Claude:** current five-hour usage, the overall weekly quota, and model-specific weekly limits such as **Fable**.
+- **Codex:** the quota windows reported by your ChatGPT account, including separate **Spark** limits when available.
+- **Weekly pacing:** an end-of-day allowance marker, reset countdowns, and how much room you have left today.
+- **Clear states:** purple for Fable, blue for other weekly meters, red for usage beyond today's allowance, and muted last-known data when a reading goes stale.
 
-- **5-HOUR** — your rolling 5-hour session limit, with the reset time.
-- **7-DAY** — your weekly limit, with the reset day.
-- **CREDITS** — extra-usage spend against your monthly cap (if you have it enabled).
-- A live clock, and a colour code that slides from green → yellow → orange → red
-  as you approach a limit.
+The dashboard reads subscription quotas, not estimated token costs. It makes no inference requests and runs without a browser, web server, or hosted service.
 
-It's deliberately boring in the best way: a light, steady load — around 130 MB
-of RAM and a CPU that sits essentially idle (it only repaints when the clock
-ticks or the numbers change, ~0% the rest of the time) — and it survives network
-blips by showing the last known numbers with a small "stale" marker.
+> **Status: macOS prototype.** Live collection works with existing Claude Code and Codex sign-ins. Standalone authentication is experimental; Raspberry Pi installation and hardware validation are still ahead.
 
----
+## Try it
 
-## The hardware
+You need macOS, Python 3.9 or newer, and Git. A framework build of Python is recommended for the native window; the setup script prefers an installed Python 3.13 framework over a non-framework default interpreter.
 
-Here's the exact bill of materials I used. None of it is special — swap in
-whatever you have lying around.
+```sh
+git clone https://github.com/marciogranzotto/quota-strip.git
+cd quota-strip
+./setup-mac.sh
+./run.sh --demo --windowed
+```
 
-| Part | Notes |
+For live readings, install and sign in to [Claude Code](https://code.claude.com/docs/en/overview) and [Codex](https://github.com/openai/codex), then run:
+
+```sh
+./run.sh --source local --windowed
+```
+
+Or double-click **Launch Quota Strip.command** after setup. Press **Esc** or **Q**, or close the window, to quit.
+
+Each provider refreshes independently every two minutes. Network failures retain the last reading and back off before retrying. Missing data is never treated as zero usage.
+
+## Reading the weekly meter
+
+A readout such as **24% / 66%** means:
+
+- **24%** of that weekly quota has been used.
+- **66%** is the allowance by the end of today, assuming an even pace across the week.
+- **42% left today** is the difference, measured against the full weekly quota.
+
+The vertical marker shows that allowance. Usage beyond it turns red. This is a pacing guide; it does not change the provider's limits or promise that a particular number of prompts will fit.
+
+```text
+window start = reset time − 7 days
+allowance    = 100 × (next local midnight − window start) / 7 days
+```
+
+The allowance is rounded to the nearest integer and clamped to 0–100. Midnight is calculated in the configured timezone, including daylight-saving transitions. Once a reset passes, the old reading is marked as awaiting an update.
+
+Fable uses its own reported percentage and reset time. It also draws from Claude's overall allowance, so its meter is not extra capacity on top of the overall weekly quota.
+
+## Configuration
+
+```sh
+# Set the timezone used for daily pacing.
+./run.sh --source local --timezone Europe/London
+
+# Poll every five minutes (minimum: 60 seconds).
+./run.sh --source local --interval 300
+
+# Read normalized quotas once, without opening a window.
+./run.sh --json --source local
+```
+
+| Setting | Purpose |
 | --- | --- |
-| **Raspberry Pi 3B+** | A 3B+ is plenty. A Pi 4 / 5 or even a Zero 2 W works too — this app is featherweight. |
-| **Waveshare 3.5″ capacitive touch screen (640×480)** | The star of the show. Shows up as a standard 640×480 display once configured. Touch isn't required by this app, but it's nice. |
-| **32 GB microSD card** | Get a fast one (A1/A2, e.g. SanDisk Extreme) — it makes flashing and boot noticeably snappier. 16 GB is fine if that's what you have. |
-| **40-pin GPIO ribbon cable** | To get the Pi's GPIO out to the screen at a sensible angle inside the case. |
-| **3D-printed case — [Raspberry Pi Macintosh Plus](https://www.printables.com/model/1259764-raspberry-pi-5-macintosh-plus)** | A gorgeous little retro Mac enclosure. (Linked is the newer Pi 5 revision of the case I used — check the fit notes for your Pi model.) |
+| `--timezone` / `QUOTA_TIMEZONE` | IANA timezone for midnight and the clock; currently defaults to `America/Sao_Paulo`. |
+| `--interval` | Seconds between successful reads; default `120`. |
+| `QUOTA_HOME` | Runtime data directory; default `~/.config/quota-strip`. |
+| `QUOTA_CODEX_BIN` | Path to the Codex executable. Setup also records the detected path in the ignored `.local-config.json`. |
+| `QUOTA_PYTHON` | Python interpreter to use when running `setup-mac.sh`. |
 
-> 💡 **On the screen:** these small Waveshare panels need a one-time driver /
-> `dtoverlay` setup. Follow [Waveshare's wiki](https://www.waveshare.com/wiki/Main_Page)
-> for your exact part number. As far as this app is concerned, the only thing
-> that matters is that your desktop comes up at **640×480** — everything is laid
-> out for that resolution.
+The current header badges read `MAX 20×` and `CHATGPT PRO`; they are presentation labels, not detected subscription metadata. Quota values always come from the account response.
 
----
+The layout keeps two windows visible and rotates additional windows through the third slot when a provider reports more than three. The window is fixed at 1920 × 480.
 
-## Software setup
+## Data sources and privacy
 
-### 1. Flash Raspberry Pi OS
+**Claude** reads the existing Claude Code credentials file or macOS Keychain entry and requests account usage. It does not modify or refresh those credentials. If they expire, renew the login through Claude Code. An optional fallback reads `~/.claude/.debug/statusline-input.json` if an existing status-line setup already produces it; Quota Strip does not create or enable that capture. Fallback readings preserve their original age and do not include Fable.
 
-Use [Raspberry Pi Imager](https://www.raspberrypi.com/software/) to flash the
-**64-bit Raspberry Pi OS with desktop** (Bookworm or newer — this was built on
-the Debian 13 "trixie" image, which uses the **labwc** Wayland compositor by
-default). In the Imager's advanced settings, set your Wi-Fi and enable SSH so you
-can do the rest headless.
+**Codex** launches the installed CLI's app-server, requests `account/rateLimits/read`, and stops that child process after the read. No coding task is started. The CLI manages its own account session.
 
-### 2. Get the screen showing 640×480
+Runtime snapshots store normalized percentages, window labels, timestamps, and source information. The application does not collect prompts, transcripts, or email addresses. It has no telemetry. Credentials are sent only to their provider's account endpoints; provider errors are sanitized before display.
 
-Configure the Waveshare panel per its wiki, boot to the desktop, and confirm the
-resolution:
+Local configuration, credentials, snapshots, logs, virtual environments, and process IDs are excluded from Git. Generated screenshots can contain your usage information—use `--demo` for images you intend to share.
 
-```bash
-wlr-randr        # should list a 640x480 mode as "current"
+## Development
+
+The only runtime dependency outside the Python standard library is **Pygame**. No frontend build step is required.
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+
+# Reproduce the README image without credentials or network access.
+./run.sh --demo --timezone UTC --at 2026-01-07T18:00:00+00:00 \
+  --screenshot docs/preview.png
 ```
 
-### 3. Log in to Claude Code
-
-The display piggybacks on your existing Claude Code login — it reads the OAuth
-token from `~/.claude/.credentials.json`. So just install and authenticate
-Claude Code on the Pi:
-
-```bash
-# install Claude Code (see https://claude.com/claude-code for the latest)
-claude            # run once and log in with your Anthropic account
-```
-
-Any plan with a usage page works (this was built on a Max plan).
-
-### 4. Install the display
-
-```bash
-git clone https://github.com/fuziontech/claude-quota-display.git
-cd claude-quota-display
-./install.sh
-```
-
-The installer will:
-
-1. install `python3-pygame` if it's missing,
-2. **autohide the top taskbar** so you get the whole 640×480 (`wf-panel-pi`),
-3. add the app to the labwc autostart so it launches on every boot and
-   auto-restarts if it ever crashes,
-4. offer to start it right now without rebooting.
-
-That's it. Reboot and your Pi comes up as a Claude quota gauge.
-
----
-
-## Running it on a Mac (development)
-
-You don't need a Pi to hack on this. On macOS the app adapts automatically:
-
-- **Credentials** — Claude Code stores its OAuth token in the **login Keychain**
-  on a Mac, not in `~/.claude/.credentials.json`. `quota_api.py` detects this and
-  reads (and refreshes, if needed) the Keychain item directly, so no setup is
-  required beyond being logged into Claude Code.
-- **Display** — it comes up **windowed** instead of fullscreen, with the cursor
-  visible, so it doesn't take over your screen.
-
-With [uv](https://docs.astral.sh/uv/):
-
-```bash
-uv sync                       # creates .venv with Python + pygame
-uv run python quota_api.py    # see the raw usage JSON
-uv run python quota_display.py  # windowed on macOS by default
-```
-
-Force a mode regardless of platform:
-
-```bash
-uv run python quota_display.py --windowed     # or --fullscreen
-QUOTA_WINDOWED=1 uv run python quota_display.py
-```
-
-(On the Pi, none of this changes anything — it reads the credentials file and
-launches fullscreen as before.)
-
----
-
-## How it works
-
-It's three small files:
-
-- **`quota_api.py`** — the data layer. It reads your token from
-  `~/.claude/.credentials.json` and calls Anthropic's usage endpoint:
-
-  ```
-  GET https://api.anthropic.com/api/oauth/usage
-  Authorization: Bearer <token>
-  anthropic-beta: oauth-2025-04-20
-  ```
-
-  which returns `five_hour`, `seven_day`, and `extra_usage` utilization plus
-  reset timestamps. While you actively use Claude Code on the Pi, the CLI keeps
-  that token fresh for us. As a safety net for a device that mostly just
-  displays, the app will **refresh the token itself** (via the OAuth token
-  endpoint) if it finds the token has actually expired, and writes the result
-  back atomically so it can never corrupt your credentials file.
-
-- **`quota_display.py`** — the UI. A pygame fullscreen app with a background
-  thread doing the fetching (so a slow network never freezes the clock) and a
-  main loop that only repaints when something visible changes, so it stays near
-  0% CPU. Layout, colours, and thresholds all live at the top of the file.
-
-- **`run.sh`** — a one-line launcher used by the autostart.
-
-No data leaves your Pi except the call to Anthropic's own API — the same call
-Claude Code already makes.
-
----
-
-## Customising it
-
-Everything tweakable is at the top of the two Python files:
-
-| Want to change… | Where |
+| File | Responsibility |
 | --- | --- |
-| How often it polls | `POLL_INTERVAL` in `quota_display.py` (default 5*60s) |
-| When data is flagged "stale" | `STALE_AFTER` in `quota_display.py` |
-| Colours / theme | the colour constants near the top of `quota_display.py` |
-| Colour thresholds (when bars turn yellow/red) | `bar_color()` in `quota_display.py` |
-| Which metrics show | the `render()` method in `quota_display.py` |
+| `quota_model.py` | Normalize provider windows and calculate weekly allowances. |
+| `quota_local.py` | Read existing local Claude and Codex sign-ins. |
+| `quota_api.py`, `quota_auth.py` | Experimental standalone account requests and sign-in flows. |
+| `quota_state.py` | Independent polling, backoff, caching, and stale readings. |
+| `quota_display.py` | Native rendering, demo mode, and command-line options. |
 
-Run the data layer on its own to see the raw JSON you have to work with:
+Tests cover provider parsing, model-specific quotas, midnight and DST boundaries, stale data, atomic storage, and mocked authentication contracts. CI also renders the demo headlessly.
 
-```bash
-python3 quota_api.py
-```
+## Roadmap and limits
 
----
+- [x] Native 1920 × 480 macOS dashboard.
+- [x] Claude, Fable, Codex, and Spark quota windows.
+- [x] Weekly pacing, reset countdowns, and stale-data handling.
+- [ ] Verify independent sign-in and real token renewal end to end.
+- [ ] Validate unattended recovery from network and authentication failures.
+- [ ] Deploy on an original Raspberry Pi Model B+ with automatic startup.
+- [ ] Validate the physical HDMI panel and long-running resource usage.
 
-## Managing it
+`--source standalone` and `quota_auth.py` provide groundwork for appliance-owned credentials. Their flows have mocked tests but are not yet validated with real standalone sign-in or refresh. The consumer usage endpoints are not a stable public integration API and may change.
 
-`Esc` or `q` quits the app (the autostart will bring it back on next boot).
+This project does not track every ChatGPT feature, API billing, extra-usage credit balances, or a guaranteed number of remaining messages. No Raspberry Pi installer is provided yet; `install.sh` currently delegates to the Mac setup script.
 
-To control the live instance the installer started, export your session env and
-talk to the user service:
+## Credits
 
-```bash
-export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0
+Adapted from [fuziontech/claude-quota-display](https://github.com/fuziontech/claude-quota-display), with its history and MIT license preserved. See the [research notes](docs/RESEARCH.md) for integration references.
 
-systemctl --user status  claude-quota.service
-systemctl --user restart claude-quota.service
-systemctl --user stop    claude-quota.service
-```
+Provider icons come from [Lobe Icons](https://github.com/lobehub/lobe-icons); source details and licensing are in [assets](assets/README.md). Claude and OpenAI/ChatGPT marks belong to their respective owners. This project is not affiliated with or endorsed by Anthropic or OpenAI.
 
-**To bring the taskbar back permanently**, delete
-`~/.config/wf-panel-pi/wf-panel-pi.ini`.
-
-**To disable autostart**, remove the `# Claude quota display` line from
-`~/.config/labwc/autostart` (or delete that file to fall back to the system
-default).
-
----
-
-## Troubleshooting
-
-- **Blank screen / app won't launch on boot** — make sure the desktop session is
-  labwc/Wayland and that `~/.config/labwc/autostart` contains the launch line.
-  Run `./run.sh` from a desktop terminal to see any error directly.
-- **"connecting…" never goes away** — your token probably isn't valid. Run
-  `claude` once to log in, then `python3 quota_api.py` to confirm you get JSON.
-- **Bars look like tiny dots** — that's just a very low percentage rendering as a
-  rounded sliver. It's accurate; nudge the bar code if it bugs you.
-- **Wrong resolution / cut-off layout** — the UI is hard-coded for 640×480. If
-  your panel is a different size, adjust `WIDTH`/`HEIGHT` and the y-offsets in
-  `quota_display.py`.
-
----
-
-## A note on privacy
-
-This reads your local Claude credentials to authenticate, exactly as Claude Code
-does. It only ever contacts Anthropic's API. Don't commit your
-`~/.claude/.credentials.json` anywhere, and treat the Pi like any logged-in
-device.
-
----
-
-## License
-
-MIT — see [LICENSE](LICENSE). Build one, put it in a tiny Mac, share a photo. 🖥️
+[MIT license](LICENSE).

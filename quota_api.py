@@ -1,209 +1,190 @@
-"""Claude usage/quota data layer.
+"""Account-only requests, adapted from fuziontech/claude-quota-display.
 
-Reads the OAuth token from ~/.claude/.credentials.json (kept fresh by the
-claude CLI), queries the usage endpoint, and refreshes the token itself as a
-safety net if it has actually expired.
-
-No third-party dependencies — stdlib only.
+No inference calls or coding CLI dependencies. Unofficial endpoint contracts
+are isolated here; credentials belong exclusively to this appliance.
 """
-
 from __future__ import annotations
 
-import getpass
+from contextlib import contextmanager
+from email.utils import parsedate_to_datetime
+import fcntl
 import json
 import os
-import subprocess
-import sys
+from pathlib import Path
 import tempfile
 import time
-import urllib.request
 import urllib.error
+import urllib.parse
+import urllib.request
+from quota_model import number, parse_claude, parse_codex
 
-CREDENTIALS_PATH = os.path.expanduser("~/.claude/.credentials.json")
-# On macOS, Claude Code stores its OAuth token in the login Keychain rather than
-# in a credentials file. When the file is absent we read/write the Keychain item
-# the CLI uses, so this runs on a Mac with no extra setup.
-IS_DARWIN = sys.platform == "darwin"
-KEYCHAIN_SERVICE = "Claude Code-credentials"
-USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
-TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
-# Public Claude Code OAuth client id (present in the CLI bundle).
-CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-OAUTH_BETA = "oauth-2025-04-20"
-USER_AGENT = "claude-quota-display/1.0"
+CLAUDE_CLIENT = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CODEX_CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann"
+PROVIDERS = {
+    "claude": ("https://api.anthropic.com/api/oauth/usage", "https://platform.claude.com/v1/oauth/token", CLAUDE_CLIENT),
+    "codex": ("https://chatgpt.com/backend-api/wham/usage", "https://auth.openai.com/oauth/token", CODEX_CLIENT),
+}
 
 
-class AuthError(Exception):
-    """Raised when we have no usable token and cannot refresh one."""
+class QuotaError(Exception):
+    def __init__(self, message, status=None, retry_after=0):
+        super().__init__(message)
+        self.status, self.retry_after = status, retry_after
 
 
-def _read_keychain() -> dict:
-    """Read the credentials JSON from the macOS login Keychain."""
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise AuthError("no credentials in macOS Keychain (run `claude` to log in)")
-    return json.loads(result.stdout)
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward account credentials through a redirect.
+        return None
 
 
-def _write_keychain(creds: dict) -> None:
-    """Update the Keychain item in place (-U), matching the CLI's account/service."""
-    result = subprocess.run(
-        [
-            "security", "add-generic-password", "-U",
-            "-s", KEYCHAIN_SERVICE,
-            "-a", getpass.getuser(),
-            "-w", json.dumps(creds),
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise AuthError(f"could not write Keychain: {result.stderr.strip()}")
-
-
-def _use_keychain() -> bool:
-    """The Keychain is the source on macOS when no credentials file is present.
-    A file, if it exists, always wins (Linux, or an explicit export on a Mac)."""
-    return IS_DARWIN and not os.path.exists(CREDENTIALS_PATH)
-
-
-def _read_credentials() -> dict:
-    if _use_keychain():
-        return _read_keychain()
-    with open(CREDENTIALS_PATH) as fh:
-        return json.load(fh)
-
-
-def _write_credentials(creds: dict) -> None:
-    """Persist credentials back to wherever we read them from."""
-    if _use_keychain():
-        _write_keychain(creds)
-        return
-    # Atomically replace the credentials file, preserving permissions.
-    directory = os.path.dirname(CREDENTIALS_PATH)
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".credentials.", suffix=".tmp")
+def retry_seconds(value, now=None):
+    if not value:
+        return 0
     try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(creds, fh)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, CREDENTIALS_PATH)
-    except BaseException:
+        return max(0, int(value))
+    except ValueError:
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            return max(0, parsedate_to_datetime(value).timestamp() - (time.time() if now is None else now))
+        except (ValueError, TypeError, OverflowError):
+            return 0
 
 
-def _refresh_token() -> dict:
-    """Refresh the access token using the refresh token; persist the result.
-
-    Reads the credentials fresh (so we always use the newest refresh token the
-    claude CLI may have written) and, on success, merges only the token fields
-    back into a freshly re-read file — never the stale snapshot — so we cannot
-    clobber other fields the CLI updated concurrently.
-
-    Returns the updated claudeAiOauth dict. Raises AuthError on failure.
-    """
-    oauth = _read_credentials().get("claudeAiOauth", {})
-    refresh_token = oauth.get("refreshToken")
-    if not refresh_token:
-        raise AuthError("no refresh token available")
-
-    payload = json.dumps(
-        {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": CLIENT_ID,
-        }
-    ).encode()
-    req = urllib.request.Request(
-        TOKEN_URL,
-        data=payload,
-        method="POST",
-        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-    )
+def request_json(url, *, payload=None, form=False, headers=None):
+    if urllib.parse.urlsplit(url).scheme != "https":
+        raise QuotaError("HTTPS is required")
+    hdr = {"Accept": "application/json", "User-Agent": "quota-strip/0.1"}
+    hdr.update(headers or {})
+    body = None
+    if payload is not None:
+        body = (urllib.parse.urlencode(payload) if form else json.dumps(payload)).encode()
+        hdr["Content-Type"] = "application/x-www-form-urlencoded" if form else "application/json"
+    req = urllib.request.Request(url, data=body, headers=hdr)
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode())
-        access_token = data["access_token"]
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=20) as response:
+            raw = response.read(2_000_001)
+            if len(raw) > 2_000_000:
+                raise QuotaError("Unexpectedly large provider response")
+            result = json.loads(raw)
+            if not isinstance(result, dict):
+                raise QuotaError("Unexpected provider response")
+            return result
     except urllib.error.HTTPError as exc:
-        raise AuthError(f"refresh failed: HTTP {exc.code}") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise AuthError(f"refresh failed: {exc}") from exc
-    except (KeyError, ValueError) as exc:
-        raise AuthError(f"refresh failed: bad response ({exc})") from exc
-
-    # Re-read right before writing and touch only the token fields, so a
-    # concurrent CLI refresh in the meantime is not reverted.
-    creds = _read_credentials()
-    latest = creds.setdefault("claudeAiOauth", {})
-    latest["accessToken"] = access_token
-    if data.get("refresh_token"):
-        latest["refreshToken"] = data["refresh_token"]
-    if data.get("expires_in") is not None:
-        latest["expiresAt"] = int(time.time() * 1000) + int(data["expires_in"]) * 1000
-    _write_credentials(creds)
-    return latest
+        delay = retry_seconds(exc.headers.get("Retry-After"))
+        exc.close()
+        label = {401: "Sign-in expired", 403: "Access denied", 429: "Provider rate limited"}.get(exc.code, "Provider request failed")
+        raise QuotaError(f"{label} (HTTP {exc.code})", exc.code, delay) from None
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise QuotaError("Network unavailable") from None
+    except (ValueError, UnicodeError):
+        raise QuotaError("Provider returned invalid JSON") from None
 
 
-def _is_expired(oauth: dict, skew_ms: int = 60_000) -> bool:
-    expires_at = oauth.get("expiresAt")
-    if not expires_at:
-        return False
-    return time.time() * 1000 >= (expires_at - skew_ms)
+def data_home():
+    return Path(os.environ.get("QUOTA_HOME", str(Path.home() / ".config/quota-strip"))).expanduser()
 
 
-def _request_usage(access_token: str) -> dict:
-    req = urllib.request.Request(
-        USAGE_URL,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "anthropic-beta": OAUTH_BETA,
-            "User-Agent": USER_AGENT,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode())
-
-
-def _refresh_or_reload() -> dict:
-    """Refresh the token, or — if our refresh loses a race with the CLI — fall
-    back to whatever token the CLI just wrote to disk."""
+def atomic_json(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, name = tempfile.mkstemp(prefix=".quota-", dir=path.parent)
     try:
-        return _refresh_token()
-    except AuthError:
-        return _read_credentials().get("claudeAiOauth", {})
+        with os.fdopen(fd, "w") as stream:
+            json.dump(data, stream, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
 
 
-def fetch_usage() -> dict:
-    """Fetch current usage. Refreshes the token if needed. Raises on failure."""
-    oauth = _read_credentials().get("claudeAiOauth", {})
+class CredentialStore:
+    def __init__(self, provider, home=None):
+        if provider not in PROVIDERS:
+            raise ValueError("Unknown provider")
+        self.provider = provider
+        self.home = Path(home) if home else data_home()
+        self.path = self.home / f"{provider}-auth.json"
 
-    if _is_expired(oauth):
-        oauth = _refresh_or_reload()
+    @contextmanager
+    def locked(self):
+        self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.home / f"{self.provider}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(fd, "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
 
-    try:
-        return _request_usage(oauth["accessToken"])
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            # Token rejected — refresh (or reload the CLI's token) and retry once.
-            oauth = _refresh_or_reload()
-            return _request_usage(oauth["accessToken"])
-        raise
+    def read(self):
+        try:
+            data = json.loads(self.path.read_text())
+            if not isinstance(data, dict) or not isinstance(data.get("access_token"), str) or not data["access_token"]:
+                raise ValueError()
+            return data
+        except (OSError, ValueError):
+            raise QuotaError(f"Sign in: python3 quota_auth.py {self.provider}") from None
+
+    def save(self, data):
+        atomic_json(self.path, data)
 
 
-if __name__ == "__main__":
-    import sys
+def token_record(response, previous=None):
+    record = dict(previous or {})
+    access = response.get("access_token")
+    if not isinstance(access, str) or not access:
+        raise QuotaError("Token response has no access token")
+    record["access_token"] = access
+    for name in ("refresh_token", "account_id"):
+        if isinstance(response.get(name), str) and response[name]:
+            record[name] = response[name]
+    expires = number(response.get("expires_in"))
+    record["expires_at"] = time.time() + expires if expires is not None else None
+    return record
 
-    try:
-        usage = fetch_usage()
-        json.dump(usage, sys.stdout, indent=2)
-        print()
-    except Exception as exc:  # noqa: BLE001 - CLI surface
-        print(f"ERROR: {exc}", file=sys.stderr)
-        sys.exit(1)
+
+class Provider:
+    def __init__(self, name, home=None, request=request_json):
+        self.name, self.store, self.request = name, CredentialStore(name, home), request
+
+    def refresh(self, creds):
+        if not creds.get("refresh_token"):
+            raise QuotaError("Sign-in needs renewal; run quota_auth.py")
+        _, token_url, client = PROVIDERS[self.name]
+        response = self.request(token_url, payload={
+            "grant_type": "refresh_token", "refresh_token": creds["refresh_token"], "client_id": client,
+        }, form=self.name == "codex")
+        updated = token_record(response, creds)
+        self.store.save(updated)
+        return updated
+
+    def fetch(self):
+        # Locks cover refresh + publication. CLI stores are never accessed.
+        with self.store.locked():
+            creds = self.store.read()
+            expiry = number(creds.get("expires_at"))
+            refreshed = expiry is not None and expiry <= time.time() + 60
+            if refreshed:
+                creds = self.refresh(creds)
+            try:
+                data = self.get_usage(creds)
+            except QuotaError as exc:
+                if exc.status != 401 or refreshed:
+                    raise
+                data = self.get_usage(self.refresh(creds))
+        try:
+            return (parse_claude if self.name == "claude" else parse_codex)(data, time.time())
+        except (ValueError, TypeError, KeyError):
+            raise QuotaError("Quota response changed; update collector") from None
+
+    def get_usage(self, creds):
+        headers = {"Authorization": "Bearer " + creds["access_token"]}
+        if self.name == "claude":
+            headers["anthropic-beta"] = "oauth-2025-04-20"
+        elif creds.get("account_id"):
+            headers["ChatGPT-Account-Id"] = creds["account_id"]
+        return self.request(PROVIDERS[self.name][0], headers=headers)

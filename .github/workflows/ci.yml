@@ -15,9 +15,13 @@ jobs:
       - name: Install pygame
         run: pip install -r requirements.txt
       - name: Byte-compile
-        run: python -m py_compile quota_api.py quota_display.py
+        run: python -m compileall -q quota_api.py quota_auth.py quota_model.py quota_state.py quota_local.py quota_display.py
+      - name: Quota, budget, and authentication contract tests
+        run: python -m unittest discover -s tests -v
       - name: Import modules (headless)
         env:
           SDL_VIDEODRIVER: dummy
           SDL_AUDIODRIVER: dummy
         run: python -c "import quota_api, quota_display; print('imports OK')"
+      - name: Render demo
+        run: python quota_display.py --demo --at 2026-09-05T18:00:00-03:00 --screenshot /tmp/preview.png

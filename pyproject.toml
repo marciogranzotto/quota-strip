@@ -1,13 +1,13 @@
 [project]
-name = "claude-quota-display"
-version = "1.0.0"
-description = "A tiny, always-on dashboard for your Claude usage."
+name = "quota-strip"
+version = "0.1.0"
+description = "A 1920x480 Claude and Codex quota display with end-of-day weekly budgets."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 dependencies = [
     # quota_api.py is stdlib-only; pygame is only needed for the display UI.
-    "pygame>=2.5",
+    "pygame==2.6.1",
 ]
 
 [tool.uv]

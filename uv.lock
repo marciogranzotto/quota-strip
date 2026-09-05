@@ -3,17 +3,6 @@ revision = 3
 requires-python = ">=3.9"
 
 [[package]]
-name = "claude-quota-display"
-version = "1.0.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "pygame" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "pygame", specifier = ">=2.5" }]
-
-[[package]]
 name = "pygame"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -58,3 +47,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b8/a5/ef76a85da2cb7bc6b9fc54b0a56cf75f244c8adcd16bab8d0d9d7398bfed/pygame-2.6.1-pp39-pypy39_pp73-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:17498a2b043bc0e795faedef1b081199c688890200aef34991c1941caa2d2c89", size = 14182026, upload-time = "2024-09-29T11:40:28.978Z" },
     { url = "https://files.pythonhosted.org/packages/8b/11/5519d3dfc8046822289dbd8ffde407e30ddb56b6f4a78ca39121a545a322/pygame-2.6.1-pp39-pypy39_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:7103c60939bbc1e05cfc7ba3f1d2ad3bbf103b7828b82a7166a9ab6f51950146", size = 13869271, upload-time = "2024-09-29T11:40:31.176Z" },
 ]
+
+[[package]]
+name = "quota-strip"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "pygame" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pygame", specifier = "==2.6.1" }]
