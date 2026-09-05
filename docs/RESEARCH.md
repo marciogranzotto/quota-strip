@@ -33,9 +33,9 @@ Standalone mode keeps appliance-owned credentials separate from local CLI stores
 
 ## Validation boundaries
 
-Live macOS reads have been verified. Unit tests cover quotas, pacing, storage, staleness, and mocked authentication. A headless demo checks the native drawing path without using account data.
+Live macOS and standalone Pi reads have been verified. Unit tests cover quotas, pacing, storage, staleness, and mocked authentication. A headless demo checks the native drawing path without using account data; CI also validates the installer scripts and systemd units.
 
-The deployment target is a Raspberry Pi 3 Model B v1.2, using Raspberry Pi OS Lite 64-bit. Raspberry Pi lists the 3B as compatible with its 64-bit OS. Display timing, OS installation, unattended startup, and physical validation remain ahead. See [Raspberry Pi operating systems](https://www.raspberrypi.com/software/operating-systems/).
+The application is deployed on a Raspberry Pi 3 Model B v1.2 using Raspberry Pi OS Lite 64-bit (Trixie). Its panel's native 480 × 1920 mode runs at 60 Hz and is rotated into a physically verified 1920 × 480 display. App crash recovery and graphical session shutdown were tested on the hardware. An unresolved undervoltage issue leaves cold-boot recovery, physical network recovery, and sustained unattended operation unverified. See the [hardware validation record](RASPBERRY_PI.md#hardware-validation-record-2026-09-05) and [Raspberry Pi operating systems](https://www.raspberrypi.com/software/operating-systems/).
 
 ## Banked reset metadata
 
@@ -55,6 +55,8 @@ Claude Code's documented status-line payload reports only the main five-hour and
 - [Python HTTP server](https://docs.python.org/3/library/http.server.html): `ThreadingHTTPServer` handles browser pre-opened sockets without blocking the callback.
 - [Codex backend reset client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client/rate_limit_resets.rs) and [types](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/types.rs): HTTP usage includes `rate_limit_reset_credits.available_count`; GET `/wham/rate-limit-reset-credits` provides expiry details in snake_case with ISO timestamps. These fields are normalized without retaining identifiers. No redemption operation is implemented.
 - [LightDM configuration](https://github.com/canonical/lightdm/blob/main/data/lightdm.conf): a dedicated auto-login X session supplies display authorization.
-- [systemctl](https://manpages.debian.org/trixie/systemd/systemctl.1.en.html) and [service restart policy](https://manpages.debian.org/trixie/systemd/systemd.service.5.en.html): import only display environment variables, start the user service with `--wait`, and let systemd restart the dashboard.
+- [systemctl](https://manpages.debian.org/trixie/systemd/systemctl.1.en.html), [unit dependencies](https://github.com/systemd/systemd/blob/main/man/systemd.unit.xml), and [service restart policy](https://manpages.debian.org/trixie/systemd/systemd.service.5.en.html): import only display environment variables and wait on a persistent session target. The target `Wants=` the app; the app is `PartOf=` the target. An app failure does not end the target, while stopping the target stops the app. Waiting directly on the app service caused a real crash test to end the X session and return to LightDM's greeter.
+- [Xorg output configuration](https://gitlab.freedesktop.org/xorg/xserver/-/blob/master/hw/xfree86/modes/xf86Crtc.c): without an explicit monitor mapping, the output name selects the monitor section. Matching the section's `Identifier` to `HDMI-1` made the native mode and `Rotate` setting apply at X startup.
+- [Imager customization formats](https://github.com/raspberrypi/rpi-imager/blob/main/doc/os_customisation_formats.md): current Trixie customization needs Imager 2.x and cloud-init. A successful image verification alone does not prove the login and network configuration was applied.
 
 The Pi installer uses distribution-provided Pygame and Xorg packages. The Mac remains independent from the Pi's operation; each device should have a separate provider login when both run simultaneously.

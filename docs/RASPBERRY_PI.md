@@ -4,6 +4,20 @@ Target: **Raspberry Pi 3 Model B v1.2**, a 1920 × 480 HDMI strip, and Raspberry
 
 First boot, standalone quota collection, the rotated 1920 × 480 display, app crash recovery, and graphical session shutdown have been verified on a Pi 3B and a physical strip panel. Reboot, network recovery, and long-running operation remain part of the acceptance checks below; reliable power is required.
 
+## Hardware validation record (2026-09-05)
+
+| Check | Result |
+| --- | --- |
+| OS and provisioning | Pi 3 Model B Rev 1.2, `aarch64`, Raspberry Pi OS Lite Trixie; cloud-init completed and Wi-Fi/SSH worked. |
+| Independent collection | Live Claude five-hour, weekly, and Fable quotas; Codex/Spark windows and banked-reset metadata, with the Mac collector stopped. |
+| Physical display | Panel advertises 480 × 1920 at 60 Hz on `HDMI-1`; clockwise rotation produces a 1920 × 480 desktop. Upright orientation and full-panel fit were confirmed physically. |
+| Rotation persistence | Confirmed across graphical session restarts using the monitor configuration below. A full reboot remains untested. |
+| App crash recovery | Forced termination restarted the app while preserving the same X server and landscape mode. |
+| Session shutdown | Stopping LightDM stopped the session target and app; starting it again restored the dashboard. |
+| Power | Unresolved. Repeated undervoltage messages and `get_throttled=0x50005` were observed during commissioning. |
+
+The display is usable, but unattended reliability is not established. The next checks are stable power, a cold boot with the Mac disconnected, physical network loss/recovery, and sustained operation across quota resets and token expiry.
+
 ## 1. Prepare the microSD
 
 Use **Raspberry Pi Imager 2.x or newer** from the [official download page](https://www.raspberrypi.com/software/). Imager 1.x cannot apply customization to current Trixie images: it writes a valid OS image but uses the wrong initialization format, leaving the user, Wi-Fi, and SSH settings unapplied. See the [official compatibility documentation](https://github.com/raspberrypi/rpi-imager/blob/main/doc/os_customisation_formats.md). An image verification success alone does not verify first-boot customization.
@@ -27,6 +41,16 @@ ssh quota@quota-strip.local
 ```
 
 If `.local` discovery is unavailable, use the Pi's address from your router. Keep the Mac's private SSH key on the Mac.
+
+Before the dashboard is installed, a `quota-strip login:` console prompt is normal. You can proceed over SSH without signing in on the HDMI console. SSH may not be ready immediately; allow first-boot setup to complete and check `cloud-init status` once connected.
+
+### Imager CLI on macOS
+
+Imager's graphical window and `--cli` process are separate; the GUI does not display a command-line write's progress. `Writing: 100%` is not completion: wait for image verification, OS customization, and the final `Write successful` result. Verify the boot configuration before ejecting the card.
+
+During commissioning, Imager 2.0.11.1's CLI stalled at `Unmounting drive...`: its disk worker waited for a macOS callback while Qt used the Unix event dispatcher. Setting `QT_EVENT_DISPATCHER_CORE_FOUNDATION=1` for the Imager command selected the supported macOS dispatcher and allowed writing and verification to complete. This finding applies to that observed version; see the [Qt dispatcher source](https://github.com/qt/qtbase/blob/6.9/src/corelib/thread/qthread_unix.cpp).
+
+Keep cloud-init provisioning files outside the checkout: they contain the Wi-Fi configuration, password hash, and SSH authorized key. Do not commit the card image, provisioning files, or flash logs.
 
 ## 2. Install the dashboard
 
@@ -60,6 +84,7 @@ To move an existing Quota Strip installation between devices, transfer **only it
 ```sh
 sudo systemctl restart lightdm
 systemctl --user status quota-strip.service
+systemctl --user is-active quota-strip-session.target
 journalctl --user -u quota-strip.service -n 50 --no-pager
 ```
 
@@ -77,7 +102,7 @@ After changing settings:
 systemctl --user restart quota-strip.service
 ```
 
-To pause the display, use `systemctl --user stop quota-strip.service`. To resume its graphical session, use `sudo systemctl restart lightdm`. In appliance mode, closing the app or pressing Q restarts it after five seconds.
+To pause the app, use `systemctl --user stop quota-strip.service`; resume it with `systemctl --user start quota-strip.service`. To stop or start the entire graphical session, use `sudo systemctl stop lightdm` or `sudo systemctl start lightdm`. In appliance mode, closing the app or pressing Q restarts it after five seconds.
 
 ## 5. Verify the HDMI mode
 
@@ -107,13 +132,15 @@ The `Identifier` must match the connector reported by `xrandr` (`HDMI-1` in this
 
 Repeated `Undervoltage detected!` console messages indicate a power problem, even if Wi-Fi and SSH work. Inspect `vcgencmd get_throttled`: bit 0 means undervoltage is active and bit 2 means throttling is active; bits 16 and 18 retain the corresponding history since boot. Check both the adapter and the micro-USB cable, and shut down cleanly before changing the power connection. See [Raspberry Pi power supply guidance](https://www.raspberrypi.com/documentation/computers/raspberry-pi.html#power-supply).
 
+A multi-port charger's total wattage does not establish the voltage delivered through the Pi's particular port and cable. Use `sudo poweroff` before changing the power connection. After restarting with a different supply or cable, check for active undervoltage under normal dashboard operation before repeating the reboot and network tests. A working dashboard alone is not evidence that the power issue is resolved.
+
 ## Acceptance checks on the Pi
 
 1. Confirm `uname -m` is `aarch64` and `/proc/device-tree/model` identifies the expected Pi 3B.
 2. Confirm Claude's five-hour, weekly, and Fable meters; Codex's returned windows; and the reset-bank count/expiry against account usage pages.
 3. Reboot with the Mac disconnected. The native dashboard must return by itself at 1920 × 480.
 4. Interrupt the Pi's network. Readings must become stale without disappearing or becoming zero. Reconnect and verify automatic recovery.
-5. Kill the dashboard process and confirm systemd restarts it. Inspect `NRestarts` using `systemctl --user show quota-strip.service -p NRestarts`.
+5. Kill the dashboard process and confirm systemd restarts it. Inspect `NRestarts` using `systemctl --user show quota-strip.service -p NRestarts`. Confirm the session target stays active and Xorg does not restart or return to a login screen. Separately stop LightDM and allow the configured stop timeout for both the target and app to become inactive, then start LightDM again.
 6. Leave it running across quota resets and token expiry. Inspect memory/CPU use and logs, and confirm no repeated sign-in prompts or tight request loops.
 
 ## Updates

@@ -5,7 +5,7 @@
 **Your Claude and Codex limits, always in sight.**
 
 A compact, native dashboard for a 1920 × 480 strip display.<br>
-Runs natively on macOS, with a standalone Raspberry Pi installer.
+Runs natively on macOS and independently on Raspberry Pi.
 
 [![CI](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml/badge.svg)](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -26,7 +26,7 @@ Runs natively on macOS, with a standalone Raspberry Pi installer.
 
 The dashboard reads subscription quotas, not estimated token costs. It makes no inference requests and runs without a browser, web server, or hosted service.
 
-> **Status:** standalone sign-in, live quota reads, and real token renewal are verified on macOS. The Raspberry Pi installer is ready for hardware validation. Consumer account endpoints are unofficial and can change.
+> **Status:** deployed on a Raspberry Pi 3 Model B v1.2 with a physically verified 1920 × 480 display, live standalone quotas, and tested app crash recovery. Standalone sign-in and real token renewal are also verified on macOS. The test Pi has an unresolved undervoltage issue; cold-boot recovery, physical network recovery, and sustained operation remain unverified. Consumer account endpoints are unofficial and can change.
 
 ## Try it
 
@@ -63,7 +63,7 @@ Open the printed links to finish sign-in. Claude's `--browser` option accepts it
 
 After standalone sign-in, double-click **Launch Quota Strip.command** to open the display. Existing CLI sessions remain available through `--source local`.
 
-For Raspberry Pi OS Lite 64-bit, follow the [Pi setup guide](docs/RASPBERRY_PI.md). It covers imaging, SSH, dedicated sign-in, automatic startup, updates, and physical acceptance checks.
+For Raspberry Pi OS Lite 64-bit, follow the [Pi setup guide](docs/RASPBERRY_PI.md). It covers imaging, SSH, dedicated sign-in, automatic startup, portrait-panel rotation, updates, and the [hardware validation record](docs/RASPBERRY_PI.md#hardware-validation-record-2026-09-05).
 
 ## Reading the weekly meter
 
@@ -148,8 +148,9 @@ The only runtime dependency outside the Python standard library is **Pygame**. N
 | `quota_api.py`, `quota_auth.py`, `quota_callback.py` | Standalone account requests, sign-in, and browser callback. |
 | `quota_state.py` | Independent polling, backoff, caching, and stale readings. |
 | `quota_display.py` | Native rendering, demo mode, and command-line options. |
+| `setup-pi.sh`, `deploy/pi/` | Pi installation, LightDM session, and systemd app recovery. |
 
-Tests cover provider parsing, model-specific quotas, midnight and DST boundaries, stale data, atomic storage, and mocked authentication contracts. CI also renders the demo headlessly.
+Tests cover provider parsing, model-specific quotas, midnight and DST boundaries, stale data, atomic storage, and mocked authentication contracts. CI also checks shell scripts and systemd units and renders the demo headlessly. Hardware validation separately covers the real display and session lifecycle.
 
 ## Roadmap and limits
 
@@ -158,13 +159,16 @@ Tests cover provider parsing, model-specific quotas, midnight and DST boundaries
 - [x] Weekly pacing, reset countdowns, and stale-data handling.
 - [x] Verify independent sign-in and real token renewal on macOS.
 - [x] Exercise network failures, expired credentials, backoff, and cache recovery with automated tests.
+- [x] Deploy on a Raspberry Pi 3 Model B v1.2 with automatic graphical login configured.
+- [x] Verify the physical HDMI panel at 1920 × 480, including persistent rotation.
+- [x] Verify app crash recovery without ending the graphical session, and clean session shutdown.
+- [ ] Resolve undervoltage on the test Pi and verify cold-boot recovery with the Mac disconnected.
 - [ ] Validate physical network recovery and sustained unattended operation on the Pi.
-- [ ] Deploy on a Raspberry Pi 3 Model B v1.2 with automatic startup.
-- [ ] Validate the physical HDMI panel and long-running resource usage.
+- [ ] Validate resource usage across quota resets and token renewal on the Pi.
 
 Standalone mode uses appliance-owned credentials. Tests exercise callback validation, expired-token renewal, retry limits, network recovery, optional metadata failures, and cache restoration. The consumer usage endpoints are not a stable public integration API and may change.
 
-This project does not track every ChatGPT feature, API billing, extra-usage credit balances, or a guaranteed number of remaining messages. `install.sh` selects the Mac or Raspberry Pi installer. Pi HDMI timing and long-running resource usage still need physical validation.
+This project does not track every ChatGPT feature, API billing, extra-usage credit balances, or a guaranteed number of remaining messages. `install.sh` selects the Mac or Raspberry Pi installer. Passing the automated tests or seeing a working display does not establish power stability or unattended reliability.
 
 ## Credits
 
