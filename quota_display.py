@@ -13,7 +13,7 @@ import time
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-from quota_model import Snapshot, Window, WEEK, countdown, rounded
+from quota_model import Snapshot, Window, WEEK, FIVE_HOURS, countdown, rounded
 from quota_state import Reading, State, poll
 
 WIDTH, HEIGHT = 1920, 480
@@ -79,16 +79,28 @@ class Display:
         image = font.render(value, True, color)
         self.surface.blit(image, image.get_rect(topright=(x, y)) if right else (x, y))
 
-    def bar(self, x, y, width, used, budget=None, unavailable=False, accent=BLUE):
-        self.pg.draw.rect(self.surface, TRACK, (x, y, width, 16), border_radius=4)
-        fill = int(width * max(0, min(100, used)) / 100)
+    def bar(self, x, y, width, used, budget=None, unavailable=False, accent=BLUE, segments=1):
+        fill = self.pg.Rect(x, y, int(width * max(0, min(100, used)) / 100), 16)
         color = MUTED if unavailable else accent if budget is not None else rate_color(used)
-        if fill:
-            self.pg.draw.rect(self.surface, color, (x, y, fill, 16), border_radius=min(4, fill // 2))
-        if budget is not None and not unavailable:
-            mark = int(width * budget / 100)
-            if used > budget and fill > mark:
-                self.pg.draw.rect(self.surface, RED, (x + mark, y, fill - mark, 16))
+        mark = int(width * budget / 100) if budget is not None else None
+        clip = self.surface.get_clip()
+        for index in range(segments):
+            # Center six-pixel gaps on time boundaries, keeping the percentage
+            # scale and daily allowance marker aligned across the whole bar.
+            left = round(width * index / segments) + (3 if index else 0)
+            right = round(width * (index + 1) / segments) - (3 if index < segments - 1 else 0)
+            segment = self.pg.Rect(x + left, y, right - left, 16)
+            self.pg.draw.rect(self.surface, TRACK, segment, border_radius=4)
+            filled = segment.clip(fill)
+            if filled.width:
+                radius = min(4, filled.width // 2)
+                self.pg.draw.rect(self.surface, color, filled, border_radius=radius)
+                if mark is not None and not unavailable and used > budget:
+                    over_budget = self.pg.Rect(x + mark, y, width - mark, 16)
+                    self.surface.set_clip(clip.clip(over_budget))
+                    self.pg.draw.rect(self.surface, RED, filled, border_radius=radius)
+                    self.surface.set_clip(clip)
+        if mark is not None and not unavailable:
             self.pg.draw.line(self.surface, RED if used > budget else GREEN,
                               (x + min(width - 1, mark), y - 5), (x + min(width - 1, mark), y + 21), 3)
 
@@ -98,7 +110,7 @@ class Display:
         expired = w.expired(now)
         budget = None if stale else w.budget(now, self.zone)
         unavailable = stale or expired
-        accent = PURPLE if w.key == "seven_day_fable" else BLUE
+        accent = PURPLE if w.key == "seven_day_fable" else GREEN if w.seconds == FIVE_HOURS else BLUE
         status = MUTED if unavailable else rate_color(w.used)
         if budget is not None and not unavailable:
             status = GREEN if w.used <= budget else RED
@@ -107,9 +119,10 @@ class Display:
         self.text(label.upper(), x, y + 5, 20, label_color, True, max_width=width-350)
         value = f"{rounded(w.used)}%"
         if budget is not None:
-            value += f" / {budget}%"
+            value += f" / {rounded(budget)}%"
         self.text(value, x + width, y - 6, 38, status, True, right=True)
-        self.bar(x, y + 45, width, w.used, budget, unavailable, accent)
+        segments = {WEEK: 7, FIVE_HOURS: 5}.get(w.seconds, 1)
+        self.bar(x, y + 45, width, w.used, budget, unavailable, accent, segments)
         self.text(countdown(w.resets_at, now), x, y + 72, 18, MUTED, max_width=width/2)
         if expired:
             note = "Awaiting fresh quota"
@@ -118,7 +131,10 @@ class Display:
                     if w.observed_at is not None else "Last known usage")
         elif budget is not None:
             delta = budget - w.used
-            note = f"{abs(delta):.0f}% left today" if delta >= 0 else f"{abs(delta):.0f} pp over today's budget"
+            if w.seconds == FIVE_HOURS:
+                note = f"{abs(delta):.0f}% left now" if delta >= 0 else f"{abs(delta):.0f}% over current budget"
+            else:
+                note = f"{abs(delta):.0f}% left today" if delta >= 0 else f"{abs(delta):.0f}% over today's budget"
         else:
             note = f"{max(0, 100-w.used):.0f}% remaining"
         self.text(note, x + width, y + 72, 18, status, right=True, max_width=width/2-10)
@@ -190,7 +206,7 @@ class Display:
         self.panel("claude", readings.get("claude", Reading()), 20, now)
         self.panel("codex", readings.get("codex", Reading()), 972, now)
         self.text("QUOTA STRIP", 30, 449, 16, MUTED, True)
-        self.text("SAMPLE DATA" if sample else "Weekly marker = allowance by local midnight", 210, 449, 16, ORANGE if sample else MUTED)
+        self.text("SAMPLE DATA" if sample else "Markers: weekly by midnight · 5-hour by elapsed time", 210, 449, 16, ORANGE if sample else MUTED)
         local = datetime.fromtimestamp(now, self.zone)
         self.text(f"{self.zone.key}   {local:%a %d %b  %H:%M}", 1890, 445, 21, MUTED, right=True)
 

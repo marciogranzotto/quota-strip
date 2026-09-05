@@ -22,6 +22,8 @@ Runs natively on macOS and independently on Raspberry Pi.
 - **Codex:** the quota windows reported by your ChatGPT account, including separate **Spark** limits when available.
 - **Banked Codex resets:** the available count and next expiry, read from the same account response.
 - **Weekly pacing:** an end-of-day allowance marker, reset countdowns, and how much room you have left today.
+- **Five-hour pacing:** a moving allowance marker based on time remaining until reset, with current headroom or over-budget usage.
+- **Segmented bars:** seven equal daily portions for weekly quotas and five hourly portions for five-hour quotas, with partial segments showing exact usage.
 - **Clear states:** purple for Fable, blue for other weekly meters, red for usage beyond today's allowance, and muted last-known data when a reading goes stale.
 
 The dashboard reads subscription quotas, not estimated token costs. It makes no inference requests and runs without a browser, web server, or hosted service.
@@ -75,6 +77,8 @@ A readout such as **24% / 66%** means:
 
 The vertical marker shows that allowance. Usage beyond it turns red. This is a pacing guide; it does not change the provider's limits or promise that a particular number of prompts will fit.
 
+Each weekly segment represents one seventh of the quota; each five-hour segment represents one fifth. The fill shows quota consumed, not elapsed time. Segments are equal portions of the provider's window, rather than calendar-day boundaries. Other window durations retain a continuous bar. Both remaining and over-budget labels use `%` of the full quota.
+
 ```text
 window start = reset time − 7 days
 allowance    = 100 × (next local midnight − window start) / 7 days
@@ -83,6 +87,18 @@ allowance    = 100 × (next local midnight − window start) / 7 days
 The allowance is rounded to the nearest integer and clamped to 0–100. Midnight is calculated in the configured timezone, including daylight-saving transitions. Once a reset passes, the old reading is marked as awaiting an update.
 
 Fable uses its own reported percentage and reset time. It also draws from Claude's overall allowance, so its meter is not extra capacity on top of the overall weekly quota.
+
+## Reading the five-hour meter
+
+Five-hour markers follow elapsed time within the reported window:
+
+```text
+allowance = 100 × (1 − seconds until reset / 18,000)
+```
+
+With three hours until reset, the allowance is 40%. A reading of **20% / 40%** means **20% left now** at an even pace. Usage beyond the moving allowance is labeled **over current budget**. This is pacing headroom; the unused quota remains available from the provider even when usage is ahead of pace.
+
+The marker retains fractional precision and updates on the display's 15-second redraw schedule, independently of the two-minute provider poll. The displayed percentage is rounded. The allowance is clamped to 0–100 and is hidden for stale, expired, or missing reset information. Weekly markers continue to use local midnight.
 
 ## Banked resets
 

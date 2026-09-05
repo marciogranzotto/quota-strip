@@ -1,4 +1,4 @@
-"""Provider-neutral quota windows and the user's end-of-today budget rule."""
+"""Provider-neutral quota windows and weekly/five-hour pacing rules."""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -7,6 +7,7 @@ import math
 from zoneinfo import ZoneInfo
 
 WEEK = 604800
+FIVE_HOURS = 5 * 3600
 
 
 def number(value):
@@ -44,7 +45,13 @@ class Window:
     stale: bool = False
 
     def budget(self, now: float, zone: ZoneInfo):
-        if self.seconds != WEEK or self.resets_at is None or self.resets_at <= now:
+        if self.resets_at is None or self.resets_at <= now:
+            return None
+        if self.seconds == FIVE_HOURS:
+            # Retain fractional progress so the marker moves between whole
+            # percentages. This window uses elapsed seconds, not local dates.
+            return max(0, min(100, 100 * (1 - (self.resets_at - now) / FIVE_HOURS)))
+        if self.seconds != WEEK:
             return None
         local = datetime.fromtimestamp(now, zone)
         midnight = datetime.combine(local.date() + timedelta(days=1), day_time(), zone)
@@ -175,7 +182,7 @@ def parse_claude(data, now):
         used = number(value.get("utilization"))
         if used is None or used < 0:
             raise ValueError("Invalid Claude utilization")
-        seconds = 18000 if key == "five_hour" else WEEK
+        seconds = FIVE_HOURS if key == "five_hour" else WEEK
         suffix = key.removeprefix("seven_day").strip("_").replace("_", " ").title() if key.startswith("seven_day_") else ""
         label = duration_label(seconds) + (f" / {suffix}" if suffix else "")
         windows.append(Window(key, label, used, timestamp(value.get("resets_at")), seconds))

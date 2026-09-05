@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from quota_api import (CredentialStore, NoRedirect, Provider, QuotaError,
                        atomic_json, retry_seconds, token_record)
 from quota_auth import account_id_from_token, claude_login, codex_login, pkce_challenge
-from quota_model import (ResetBank, Snapshot, Window, WEEK, countdown,
+from quota_model import (ResetBank, Snapshot, Window, WEEK, FIVE_HOURS, countdown,
                          parse_claude, parse_codex, parse_reset_bank)
 from quota_state import Reading, State
 
@@ -52,11 +52,36 @@ class BudgetTests(unittest.TestCase):
         midnight = epoch("2026-03-09T00:00:00-04:00")
         self.assertEqual(midnight - now, 23*3600)
 
-    def test_no_budget_without_weekly_duration_and_reset(self):
+    def test_no_budget_without_supported_duration_and_reset(self):
         now = epoch("2026-09-05T12:00:00Z")
         self.assertIsNone(Window("w", "Unknown", 3, now+3600, None).budget(now, self.zone))
         self.assertIsNone(Window("w", "Weekly", 3, None, WEEK).budget(now, self.zone))
         self.assertIn("awaiting", countdown(now, now))
+
+    def test_five_hour_pace_moves_with_time_between_reads(self):
+        start = epoch("2026-09-05T12:00:00Z")
+        w = Window("h", "5-hour", 20, start + FIVE_HOURS, FIVE_HOURS)
+        self.assertEqual(w.budget(start, self.zone), 0)
+        self.assertEqual(w.budget(start + 2*3600, self.zone), 40)
+        self.assertAlmostEqual(w.budget(start + 2*3600 + 15, self.zone), 40 + 1/12)
+
+    def test_five_hour_boundaries_and_missing_reset(self):
+        start = epoch("2026-09-05T12:00:00Z")
+        w = Window("h", "5-hour", 20, start + FIVE_HOURS, FIVE_HOURS)
+        self.assertEqual(w.budget(start - 60, self.zone), 0)
+        self.assertGreater(w.budget(start + FIVE_HOURS - 1, self.zone), 99)
+        self.assertLess(w.budget(start + FIVE_HOURS - 1, self.zone), 100)
+        self.assertIsNone(w.budget(start + FIVE_HOURS, self.zone))
+        self.assertIsNone(w.budget(start + FIVE_HOURS + 1, self.zone))
+        self.assertIsNone(replace(w, resets_at=None).budget(start, self.zone))
+
+    def test_five_hour_pace_is_independent_of_midnight_and_dst(self):
+        # Spans the spring-forward transition; elapsed time is still 2.5 hours.
+        start = epoch("2026-03-08T00:30:00-05:00")
+        now = epoch("2026-03-08T04:00:00-04:00")
+        w = Window("h", "5-hour", 20, start + FIVE_HOURS, FIVE_HOURS)
+        for zone in (self.zone, ZoneInfo("America/New_York"), ZoneInfo("UTC")):
+            self.assertEqual(w.budget(now, zone), 50)
 
 
 class ParserTests(unittest.TestCase):
