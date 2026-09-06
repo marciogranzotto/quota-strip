@@ -47,6 +47,24 @@ Control subscriptions use QoS 0 and a clean MQTT session. Retained messages deli
 
 **Shutdown cannot be undone through this integration:** the Pi's network and controller stop with the OS. A Raspberry Pi 3 requires a physical power cycle or suitable external wake hardware to start again. Turning the Display switch on is different from starting a shut-down Pi. There is no software-only power-on button here.
 
+## Physical wake button and remote power-on
+
+For a **Raspberry Pi 3 Model B**, connect a normally open, momentary push button between **GPIO3 (physical pin 5)** and **GND (physical pin 6)**. Disconnect power before wiring and identify pins by their physical header numbers. The button only closes these two contacts; do not feed external voltage into them.
+
+While the Pi remains connected to its power supply, briefly pressing this button can start it after an OS shutdown. Wake from halt is provided by the firmware, so a wake-only button needs no Python daemon. GPIO3 is also the I²C clock pin; reserve it for the button and do not share it with an active I²C bus.
+
+To make the same button request a clean shutdown when the Pi is running, add this line under an applicable `[all]` section of `/boot/firmware/config.txt`, then reboot when ready:
+
+```ini
+dtoverlay=gpio-shutdown
+```
+
+The standard kernel overlay sends a power-key event to systemd-logind and includes debounce handling. No custom polling script is required. Do not combine this with `gpio-poweroff`, which interferes with GPIO3 wake. See the [official overlay documentation](https://github.com/raspberrypi/firmware/blob/master/boot/overlays/README) and [overlay source](https://github.com/raspberrypi/linux/blob/rpi-6.18.y/arch/arm/boot/dts/overlays/gpio-shutdown-overlay.dts). This optional hardware configuration is not installed automatically and has not been physically validated on the test appliance.
+
+**Native Ethernet Wake-on-LAN cannot start the Pi 3B after shutdown.** Its LAN9514 controller advertises magic-packet support, so `ethtool` can show wake capabilities, but chip-level support does not provide a system wake path on this board. Enabling an Ethernet option or adding Home Assistant's Wake-on-LAN integration does not fix that hardware limitation. See [Microchip's LAN9514 capabilities](https://www.microchip.com/en-us/product/LAN9514) and the [Pi 3B packet-reception investigation](https://forums.raspberrypi.com/viewtopic.php?t=221576), which distinguishes receiving packets while running from waking a halted Pi.
+
+For remote power-on, an independently powered Home Assistant-controlled dry-contact relay can briefly close the same GPIO3/GND contacts. That requires additional hardware and can operate over Wi-Fi; an Ethernet cable to the Pi is unnecessary for this approach. If the shutdown overlay is also enabled, pulsing the contact while the Pi is running requests shutdown, so treat a remote pulse as a power-button press, not an unconditional turn-on command.
+
 ## Update, diagnose, remove
 
 After updating your checkout, rerun `sudo ./setup-home-assistant.sh` to install controller changes. It restarts only the controller, not Home Assistant, the broker, or the dashboard.
