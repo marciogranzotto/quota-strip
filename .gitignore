@@ -17,6 +17,7 @@ dist/
 .credentials.json
 auth.json
 credentials.json
+home-assistant.json
 *.pem
 *.key
 *live*.png

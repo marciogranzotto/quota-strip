@@ -67,6 +67,10 @@ After standalone sign-in, double-click **Launch Quota Strip.command** to open th
 
 For Raspberry Pi OS Lite 64-bit, follow the [Pi setup guide](docs/RASPBERRY_PI.md). It covers imaging, SSH, dedicated sign-in, automatic startup, portrait-panel rotation, updates, and the [hardware validation record](docs/RASPBERRY_PI.md#hardware-validation-record-2026-09-05).
 
+## Home Assistant
+
+The optional [Home Assistant integration](docs/HOME_ASSISTANT.md) adds a **Display on/off switch**, **Reboot button**, and **Shutdown button** through MQTT discovery. The display can sleep while quota collection continues. It runs locally on the Pi and uses your existing MQTT broker. Starting the Pi after shutdown requires a physical power cycle or external wake hardware.
+
 ## Reading the weekly meter
 
 A readout such as **24% / 66%** means:
@@ -147,7 +151,7 @@ Local configuration, credentials, snapshots, logs, virtual environments, and pro
 
 ## Development
 
-The only runtime dependency outside the Python standard library is **Pygame**. No frontend build step is required.
+The dashboard's only runtime dependency outside the Python standard library is **Pygame**. The optional Home Assistant controller also uses **Paho MQTT**. No frontend build step is required.
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -v
@@ -164,6 +168,7 @@ The only runtime dependency outside the Python standard library is **Pygame**. N
 | `quota_api.py`, `quota_auth.py`, `quota_callback.py` | Standalone account requests, sign-in, and browser callback. |
 | `quota_state.py` | Independent polling, backoff, caching, and stale readings. |
 | `quota_display.py` | Native rendering, demo mode, and command-line options. |
+| `quota_ha.py`, `setup-home-assistant.sh` | Optional MQTT discovery, display control, and Pi power buttons. |
 | `setup-pi.sh`, `deploy/pi/` | Pi installation, LightDM session, and systemd app recovery. |
 
 Tests cover provider parsing, model-specific quotas, midnight and DST boundaries, stale data, atomic storage, and mocked authentication contracts. CI also checks shell scripts and systemd units and renders the demo headlessly. Hardware validation separately covers the real display and session lifecycle.
@@ -178,6 +183,7 @@ Tests cover provider parsing, model-specific quotas, midnight and DST boundaries
 - [x] Deploy on a Raspberry Pi 3 Model B v1.2 with automatic graphical login configured.
 - [x] Verify the physical HDMI panel at 1920 × 480, including persistent rotation.
 - [x] Verify app crash recovery without ending the graphical session, and clean session shutdown.
+- [x] Add Home Assistant MQTT discovery and verify live display power controls.
 - [ ] Resolve undervoltage on the test Pi and verify cold-boot recovery with the Mac disconnected.
 - [ ] Validate physical network recovery and sustained unattended operation on the Pi.
 - [ ] Validate resource usage across quota resets and token renewal on the Pi.

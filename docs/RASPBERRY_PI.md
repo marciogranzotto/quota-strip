@@ -153,3 +153,7 @@ sudo systemctl restart lightdm
 ```
 
 Credentials and display settings remain in the appliance user's configuration directory.
+
+## Optional Home Assistant controls
+
+Use the [Home Assistant setup guide](HOME_ASSISTANT.md) to add an MQTT display switch and reboot/shutdown buttons. The optional controller is a separate service; it keeps operating when the dashboard is stopped.

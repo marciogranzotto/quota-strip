@@ -1,0 +1,2 @@
+# Optional controller and its development tests; Pi installer uses apt.
+paho-mqtt==2.1.0

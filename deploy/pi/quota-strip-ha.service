@@ -1,0 +1,19 @@
+[Unit]
+Description=Quota Strip Home Assistant controls
+ConditionPathExists=%h/.config/quota-strip/home-assistant.json
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=/opt/quota-strip
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 -u /opt/quota-strip/quota_ha.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+UMask=0077
+# This separate controller uses sudo for the two fixed system power actions.
+# The dashboard retains NoNewPrivileges=yes in its own service.
+
+[Install]
+WantedBy=default.target

@@ -15,11 +15,11 @@ jobs:
       - name: Install pygame
         run: pip install -r requirements.txt
       - name: Byte-compile
-        run: python -m compileall -q quota_api.py quota_auth.py quota_callback.py quota_model.py quota_state.py quota_local.py quota_display.py
+        run: python -m compileall -q quota_api.py quota_auth.py quota_callback.py quota_model.py quota_state.py quota_local.py quota_display.py quota_ha.py
       - name: Check installer shell scripts
-        run: shellcheck setup-pi.sh install.sh deploy/pi/quota-strip-session
+        run: shellcheck setup-home-assistant.sh setup-pi.sh install.sh deploy/pi/quota-strip-session
       - name: Validate Pi systemd units
-        run: XDG_RUNTIME_DIR=$(mktemp -d) systemd-analyze --user verify deploy/pi/quota-strip.service deploy/pi/quota-strip-session.target
+        run: XDG_RUNTIME_DIR=$(mktemp -d) systemd-analyze --user verify deploy/pi/quota-strip.service deploy/pi/quota-strip-session.target deploy/pi/quota-strip-ha.service
       - name: Quota, budget, and authentication contract tests
         run: python -m unittest discover -s tests -v
       - name: Import modules (headless)
