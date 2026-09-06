@@ -69,7 +69,7 @@ For Raspberry Pi OS Lite 64-bit, follow the [Pi setup guide](docs/RASPBERRY_PI.m
 
 ## Home Assistant
 
-The optional [Home Assistant integration](docs/HOME_ASSISTANT.md) adds a **Display on/off switch**, **Reboot button**, and **Shutdown button** through MQTT discovery. The display can sleep while quota collection continues. It runs locally on the Pi and uses your existing MQTT broker. Starting the Pi after shutdown requires a physical power cycle or external wake hardware.
+The optional [Home Assistant integration](docs/HOME_ASSISTANT.md) adds a **Display on/off switch**, **Reboot button**, and **Shutdown button** through MQTT discovery, plus **quota sensors** for used/remaining percentages, pacing allowances, reset times, and banked Codex resets. Sensors reuse the dashboard readings without extra provider requests. The display can sleep while quota collection continues. It runs locally on the Pi and uses your existing MQTT broker. Starting the Pi after shutdown requires a physical power cycle or external wake hardware.
 
 ## Reading the weekly meter
 

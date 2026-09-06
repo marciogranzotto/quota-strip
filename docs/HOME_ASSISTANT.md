@@ -1,12 +1,24 @@
 # Home Assistant controls
 
-Quota Strip can appear as one MQTT device in Home Assistant with three entities:
+Quota Strip can appear as one MQTT device in Home Assistant with controls and quota sensors:
 
 - **Display** switch: turns the HDMI display on or off while quota collection continues.
 - **Reboot** button: restarts the Raspberry Pi.
 - **Shutdown** button: shuts down the operating system cleanly.
 
 The optional controller runs independently of the graphical dashboard. It uses [Home Assistant MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) and [Eclipse Paho](https://eclipse.dev/paho/files/paho.mqtt.python/html/client.html); no custom Home Assistant integration is needed.
+
+## Quota sensors
+
+Each reported quota window automatically gets **Used**, **Remaining**, **Reset**, and (for weekly/five-hour windows) **Pacing allowance** sensors. This includes Claude, Fable, Codex, Spark, and other windows when the provider supplies them. Codex also exposes **Banked resets** and **Banked reset expiry**. The expiry sensor has a `details_complete` attribute: false means it is only the earliest listed expiry, not a verified earliest expiry across the entire bank.
+
+Sensors share the existing Quota Strip device in Home Assistant and are available for dashboards, history, and automations. Names include the provider and window; no separate integration configuration is needed. Percentages represent the full quota: 43% used means 57% remaining. Pacing uses the same original-week allowance by local midnight and elapsed five-hour allowance as the strip display; it does not redistribute the remaining quota.
+
+The bridge reads the dashboard's local snapshots every 30 seconds without calling Claude or Codex. Normal provider collection still runs every two minutes. Sensors include an `observed_at` attribute and become unavailable for expired windows, explicitly stale model readings, missing/invalid snapshots, or observations older than ten minutes. A provider request failure that is not stored in the snapshot is reflected once its last successful reading ages out. Unknown reset times and unavailable bank expiry data are unavailable, not zero.
+
+Discovery is retained, but sensor state is **not retained**, following [Home Assistant's expiration guidance](https://www.home-assistant.io/integrations/sensor.mqtt/). State expires after 90 seconds without bridge updates, preventing a stopped controller or old broker message from making stale data look fresh. After Home Assistant restarts, allow up to 30 seconds for fresh sensor state. Model sensors that stop being reported remain registered but unavailable, preserving entity customizations and history.
+
+The bridge defaults to `America/Sao_Paulo`, matching the dashboard. If you change the dashboard timezone, also set `timezone` in the private MQTT configuration (or `QUOTA_TIMEZONE` in the controller service environment) to the same IANA timezone.
 
 ## Install
 
@@ -83,10 +95,12 @@ To stop controls:
 systemctl --user disable --now quota-strip-ha.service
 ```
 
-Retained discovery entries remain in the broker. To remove them permanently, publish an empty retained payload to the three discovery config topics for this device, then remove its entities in Home Assistant if still present. Do not clear other devices' topics. User lingering is left enabled because other services may use it.
+Retained discovery entries remain in the broker. To remove them permanently, publish an empty retained payload to the control and sensor discovery config topics for this device, then remove its entities in Home Assistant if still present. Do not clear other devices' topics. User lingering is left enabled because other services may use it.
 
 ## Validation
 
 Automated tests cover discovery, state feedback, missing sessions, command allowlists, retained/duplicate replay handling, queue bounds, stale commands, disconnect handling, and private configuration permissions. Actual reboot and shutdown commands are mocked during tests. They are not executed during setup or display verification.
 
 On the Pi 3 test appliance, all three entities were discovered by Home Assistant. Live MQTT OFF and ON commands produced matching retained state and X11 DPMS readings, with the display restored to ON. The controller service and all 59 tests passed on the Pi. Physical reboot, shutdown, and cold-boot recovery remain untested.
+
+Quota sensor validation: 26 enabled sensors were discovered on the test Home Assistant instance. Live MQTT payloads were received for six quota windows and the reset bank, with sensor state confirmed non-retained. Automated tests cover usage conversion, matching pacing calculations, freshness, stable entity IDs, discovery replay, and missing snapshots.

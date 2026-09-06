@@ -22,7 +22,7 @@ runuser -u "$quota_user" -- sudo -n -l /usr/bin/systemctl reboot >/dev/null
 runuser -u "$quota_user" -- sudo -n -l /usr/bin/systemctl poweroff >/dev/null
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-paho-mqtt
-install -m 0644 quota_ha.py /opt/quota-strip/quota_ha.py
+install -m 0644 quota_ha.py quota_ha_sensors.py /opt/quota-strip/
 install -m 0644 deploy/pi/quota-strip-ha.service /etc/systemd/user/quota-strip-ha.service
 loginctl enable-linger "$quota_user"
 quota_uid=$(id -u "$quota_user")

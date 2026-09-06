@@ -15,7 +15,7 @@ jobs:
       - name: Install pygame
         run: pip install -r requirements.txt
       - name: Byte-compile
-        run: python -m compileall -q quota_api.py quota_auth.py quota_callback.py quota_model.py quota_state.py quota_local.py quota_display.py quota_ha.py
+        run: python -m compileall -q quota_api.py quota_auth.py quota_callback.py quota_model.py quota_state.py quota_local.py quota_display.py quota_ha.py quota_ha_sensors.py
       - name: Check installer shell scripts
         run: shellcheck setup-home-assistant.sh setup-pi.sh install.sh deploy/pi/quota-strip-session
       - name: Validate Pi systemd units

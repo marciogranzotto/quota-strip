@@ -17,6 +17,7 @@ import threading
 import time
 
 from quota_api import atomic_json, data_home
+from quota_ha_sensors import QuotaSensors
 
 LOG = logging.getLogger("quota-strip-ha")
 
@@ -35,7 +36,7 @@ def validate_config(config):
     port = config.get("port", 1883)
     if type(port) is not int or not 1 <= port <= 65535:
         raise ValueError("Invalid MQTT port")
-    for key in ("username", "password", "ca_file", "ha_online_payload"):
+    for key in ("username", "password", "ca_file", "ha_online_payload", "timezone"):
         if key in config and not isinstance(config[key], str):
             raise ValueError("Invalid MQTT configuration")
     if type(config.get("tls", False)) is not bool:
@@ -128,6 +129,9 @@ class Bridge:
         self.announce = threading.Event()
         self.stop = threading.Event()
         self.published = {}
+        self.sensors = QuotaSensors(client, device_id, self.root,
+            config.get("discovery_prefix", "homeassistant"), data_home(),
+            config.get("timezone", os.environ.get("QUOTA_TIMEZONE", "America/Sao_Paulo")))
         client.on_connect = self.on_connect
         client.on_disconnect = self.on_disconnect
         client.on_message = self.on_message
@@ -182,6 +186,7 @@ class Bridge:
         for (kind, name), payload in discovery(self.device_id, self.root).items():
             self.client.publish(f"{prefix}/{kind}/quota_strip_{self.device_id}/{name}/config",
                                 json.dumps(payload), qos=1, retain=True)
+        self.sensors.reset_discovery()
         self.published.clear()
         self.refresh_display()
         self.publish("availability", "online")
@@ -214,15 +219,20 @@ class Bridge:
         self.client.connect_async(self.config["host"], self.config.get("port", 1883), keepalive=30)
         self.client.loop_start()
         next_state = 0
+        next_quotas = 0
         try:
             while not self.stop.is_set():
                 if self.announce.is_set():
                     self.announce.clear()
                     self.announce_device()
+                    next_quotas = 0
                 if time.monotonic() >= next_state:
                     if self.client.is_connected():
                         self.refresh_display()
                     next_state = time.monotonic() + 5
+                if time.monotonic() >= next_quotas:
+                    self.sensors.refresh(time.time())
+                    next_quotas = time.monotonic() + 30
                 try:
                     self.execute(self.commands.get(timeout=0.5))
                 except queue.Empty:
