@@ -8,6 +8,14 @@ from zoneinfo import ZoneInfo
 
 WEEK = 604800
 FIVE_HOURS = 5 * 3600
+# Legacy quota windows have an explicit contract. Other seven_day_* fields
+# (for example seven_day_breakdown) are metadata, not utilization meters.
+# New model-specific windows are discovered through limits[].weekly_scoped.
+CLAUDE_LEGACY_WINDOWS = frozenset({
+    "five_hour", "seven_day", "seven_day_oauth_apps", "seven_day_opus",
+    "seven_day_sonnet", "seven_day_cowork", "seven_day_omelette",
+    "seven_day_routines", "seven_day_overage_included", "seven_day_fable",
+})
 
 
 def number(value):
@@ -174,7 +182,7 @@ def parse_claude(data, now):
     windows = []
     recognized = False
     for key, value in data.items():
-        if key != "five_hour" and not key.startswith("seven_day"):
+        if key not in CLAUDE_LEGACY_WINDOWS:
             continue
         recognized = True
         if not isinstance(value, dict):

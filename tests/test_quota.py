@@ -102,6 +102,40 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(snap.windows[0].seconds, WEEK)
         self.assertEqual(snap.windows[0].label, "Weekly / Sonnet")
 
+    def test_claude_weekly_metadata_is_not_a_quota_window(self):
+        # The live endpoint added seven_day_breakdown on 2026-09-15.
+        # Metadata must neither reject real quotas nor become a fake meter.
+        quotas = {
+            "five_hour": {"utilization": 32},
+            "seven_day": {"utilization": 7},
+            "seven_day_sonnet": None,
+            "limits": [{"kind": "weekly_scoped", "percent": 0,
+                        "scope": {"model": {"display_name": "Fable"}}}],
+        }
+        expected = parse_claude(quotas, 1)
+        for metadata in ({}, {"some_category": {"percent": 7}},
+                         {"utilization": 99}, None):
+            with self.subTest(metadata=metadata):
+                self.assertEqual(parse_claude({**quotas,
+                    "seven_day_breakdown": metadata,
+                    "seven_day_future_metadata": metadata}, 1), expected)
+
+    def test_claude_metadata_alone_is_not_a_successful_reading(self):
+        for metadata in ({}, {"utilization": 99}, None):
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                parse_claude({"seven_day_breakdown": metadata}, 1)
+
+    def test_claude_known_weekly_meter_still_rejects_invalid_usage(self):
+        for key in ("seven_day", "seven_day_sonnet", "seven_day_fable"):
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                parse_claude({key: {}, "seven_day_breakdown": {}}, 1)
+
+    def test_claude_new_model_is_discovered_from_scoped_limits(self):
+        snap = parse_claude({"limits": [{"kind": "weekly_scoped", "percent": 4,
+            "scope": {"model": {"display_name": "New Model"}}}]}, 1)
+        self.assertEqual([(w.key, w.used) for w in snap.windows],
+                         [("seven_day_new_model", 4)])
+
     def test_codex_weekly_primary_and_all_buckets(self):
         snap = parse_codex({"rateLimitsByLimitId": {
             "codex": {"primary": {"usedPercent": 57, "windowDurationMins": 10080, "resetsAt": 123}},
@@ -264,6 +298,21 @@ class StorageAndAuthTests(unittest.TestCase):
             with self.assertRaises(QuotaError):
                 provider.fetch()
             refresh.assert_not_called()
+
+    def test_claude_fetch_accepts_weekly_breakdown_metadata(self):
+        provider = Provider("claude", self.home, lambda *a, **kw: {
+            "five_hour": {"utilization": 32},
+            "seven_day": {"utilization": 7},
+            "seven_day_breakdown": {},
+        })
+        provider.store.save({"access_token": "test-only"})
+        state = State("claude", self.home)
+        state.failure("Quota response changed; update collector")
+        state.success(provider.fetch())
+        self.assertIsNone(state.get().error)
+        self.assertEqual([w.used for w in state.get().snapshot.windows], [32, 7])
+        self.assertEqual(State("claude", self.home).get().snapshot,
+                         state.get().snapshot)
 
     def test_401_retries_only_once(self):
         provider = Provider("codex", self.home, lambda *a, **kw: (_ for _ in ()).throw(QuotaError("bad", 401)))

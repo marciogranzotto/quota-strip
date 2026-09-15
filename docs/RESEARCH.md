@@ -47,6 +47,21 @@ The dashboard reads metadata only; it does not implement reset redemption. Ordin
 
 ## Partial Claude readings
 
+### Additive weekly metadata (2026-09-15)
+
+A live request on the Pi returned valid `five_hour`, `seven_day`, and
+`limits[].weekly_scoped` meters alongside a new `seven_day_breakdown` object.
+The old parser treated every key starting with `seven_day` as a quota and
+rejected the entire response because this metadata had no `utilization`.
+Legacy windows are now selected by explicit field name, consistent with the
+[CodexBar field mapping](https://github.com/steipete/CodexBar/blob/main/docs/claude.md).
+Unknown metadata is ignored; recognized meters still require valid percentages.
+Model names remain dynamically supported through `limits[].weekly_scoped`.
+Regression tests cover metadata alongside valid meters, metadata-only responses,
+malformed known meters, new scoped models, and successful snapshot publication.
+
+### Local status-line fallback
+
 Claude Code's documented status-line payload reports only the main five-hour and weekly windows. A successful fallback therefore cannot replace a complete account snapshot or clear an account error. The collector retains missing windows with their original observation times, marks them stale, and retries the account endpoint with exponential backoff while reading the local capture at the normal interval. A complete account response replaces the partial state and may remove quotas that are no longer reported.
 
 ## Standalone boot and callback
