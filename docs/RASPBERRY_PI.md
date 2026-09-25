@@ -14,6 +14,7 @@ First boot, standalone quota collection, the rotated 1920 × 480 display, app cr
 | Rotation persistence | Confirmed across graphical session restarts using the monitor configuration below. A full reboot remains untested. |
 | App crash recovery | Forced termination restarted the app while preserving the same X server and landscape mode. |
 | Session shutdown | Stopping LightDM stopped the session target and app; starting it again restored the dashboard. |
+| GPIO3 power button (2026-09-25) | A momentary button on GPIO3/GND with `dtoverlay=gpio-shutdown` was physically tested: it requests a clean shutdown while running and wakes the Pi from halt. The button is in service. See the [Home Assistant guide](HOME_ASSISTANT.md#physical-wake-button-and-remote-power-on). |
 | Power | Unresolved. Repeated undervoltage messages and `get_throttled=0x50005` were observed during commissioning. |
 
 The display is usable, but unattended reliability is not established. The next checks are stable power, a cold boot with the Mac disconnected, physical network loss/recovery, and sustained operation across quota resets and token expiry.
