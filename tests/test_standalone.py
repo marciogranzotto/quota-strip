@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from quota_api import Provider, QuotaError
+from quota_api import CLAUDE_RESET_URL, Provider, QuotaError
 from quota_callback import LoopbackCallback
 from quota_model import parse_codex
 from quota_state import State, poll
@@ -114,6 +114,8 @@ class StandaloneTests(unittest.TestCase):
         phase = [0]
         calls = []
         def request(url, **kwargs):
+            if url == CLAUDE_RESET_URL:  # Optional grant read; covered separately.
+                return {'cedar_ember': None}
             calls.append(url)
             if phase[0] == 0:
                 raise QuotaError('Network unavailable')

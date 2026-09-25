@@ -38,6 +38,9 @@ def demo(now):
     # Synthetic examples only: demo mode never reads credentials or account data.
     from quota_model import parse_claude, parse_codex
     claude = parse_claude({
+        "cedar_ember": {"eligible": True, "grants": [
+            {"resets_left": 1, "ends_at": now + 20*86400, "clears": ["five_hour", "seven_day"]},
+        ]},
         "five_hour": {"utilization": 32, "resets_at": now + 2*3600},
         "seven_day": {"utilization": 24, "resets_at": now + 2*86400 + 15*3600 + 11*60},
         "limits": [{"kind": "weekly_scoped", "percent": 12,
@@ -139,14 +142,16 @@ class Display:
             note = f"{max(0, 100-w.used):.0f}% remaining"
         self.text(note, x + width, y + 72, 18, status, right=True, max_width=width/2-10)
 
-    def reset_bank(self, bank, x, now, stale):
+    def reset_bank(self, bank, x, now, stale, noun):
         if bank is None:
-            self.text("BANKED RESETS —", x, 38, 19, MUTED, True)
+            self.text(f"{noun}S —", x, 38, 19, MUTED, True)
             self.text("Count unavailable", x, 63, 15, MUTED)
             return
         old = stale or bank.needs_refresh(now)
         color = MUTED if old or not bank.available_count else GREEN
-        self.text(f"{bank.available_count} BANKED RESET" + ("S" if bank.available_count != 1 else ""),
+        clears = " + ".join({"five_hour": "5H", "seven_day": "WEEKLY"}[c] for c in bank.clears)
+        self.text(f"{bank.available_count} {noun}" + ("S" if bank.available_count != 1 else "")
+                  + (f" · {clears}" if clears and bank.available_count else ""),
                   x, 38, 19, color, True, max_width=360)
         if old:
             note = "Last known · awaiting update"
@@ -169,8 +174,8 @@ class Display:
         self.text("MAX 20×" if name == "claude" else "CHATGPT PRO", x + 904, 44, 19, MUTED, right=True)
         snapshot = reading.snapshot
         stale = reading.stale(now, self.stale_after)
-        if name == "codex":
-            self.reset_bank(snapshot.reset_bank if snapshot else None, x + 330, now, stale)
+        self.reset_bank(snapshot.reset_bank if snapshot else None, x + 330, now, stale,
+                        "BANKED RESET" if name == "codex" else "LIMIT RESET")
         if snapshot is None:
             self.text("Waiting for quota", x + 30, 159, 35, FG, True)
             self.text(reading.error or "Connecting…", x + 30, 218, 23, MUTED, max_width=865)

@@ -16,7 +16,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from quota_model import number, parse_claude, parse_codex, parse_reset_bank
+from quota_model import (CLAUDE_RESET_UNKNOWN, claude_reset_bank, number, parse_claude,
+                         parse_codex, parse_reset_bank)
 
 CLAUDE_CLIENT = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CODEX_CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -24,6 +25,12 @@ PROVIDERS = {
     "claude": ("https://api.anthropic.com/api/oauth/usage", "https://platform.claude.com/v1/oauth/token", CLAUDE_CLIENT),
     "codex": ("https://chatgpt.com/backend-api/wham/usage", "https://auth.openai.com/oauth/token", CODEX_CLIENT),
 }
+# Claude limit-reset grants (cedar_ember) are reported only on this query, and
+# only to Claude Code's CLI surface at or above a minimum version: other
+# user agents receive ineligible_reason "surface" or "cli_version". Bump the
+# version if the reset count starts reporting "cli_version".
+CLAUDE_RESET_URL = PROVIDERS["claude"][0] + "?cedar_ember=1&skip_spend=1"
+CLAUDE_CLI_AGENT = "claude-cli/2.1.282 (external, cli)"
 
 
 class QuotaError(Exception):
@@ -148,9 +155,55 @@ def token_record(response, previous=None):
     return record
 
 
+class ClaudeResetGrants:
+    """Optional read of Claude limit-reset grants, separate from quota reads.
+
+    Grants change rarely and share the usage endpoint's rate limit, so they are
+    read at most every ten minutes and back off independently. Only a read-only
+    status query is made; resets are never claimed.
+    """
+    interval = 600
+
+    def __init__(self, request=request_json, monotonic=time.monotonic):
+        self.request, self.monotonic = request, monotonic
+        self.status = None
+        self.retry_at = 0
+        self.backoff = self.interval
+        self.warning = None
+
+    def add_to(self, data, token):
+        if self.monotonic() >= self.retry_at:
+            try:
+                response = self.request(CLAUDE_RESET_URL, headers={
+                    "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
+                    "User-Agent": CLAUDE_CLI_AGENT})
+                status = response.get("cedar_ember")
+                if isinstance(status, dict) and status.get("eligible") is False:
+                    reason = status.get("ineligible_reason")
+                    if not isinstance(reason, str) or reason in CLAUDE_RESET_UNKNOWN:
+                        raise QuotaError(f"not reported ({reason if isinstance(reason, str) else 'unknown'})")
+                if claude_reset_bank(status, time.time()) is None:
+                    raise QuotaError("response changed")
+            except QuotaError as exc:
+                self.status = None
+                self.backoff = min(self.backoff * 2, 3600)
+                self.retry_at = self.monotonic() + max(self.backoff, exc.retry_after)
+                self.warning = f"Reset count unavailable: {exc}"
+            else:
+                self.status = status
+                self.backoff = self.interval
+                self.retry_at = self.monotonic() + self.interval
+                self.warning = None
+        if self.status is not None:
+            data["cedar_ember"] = self.status
+        if self.warning:
+            data["_quota_strip_warning"] = self.warning
+
+
 class Provider:
     def __init__(self, name, home=None, request=request_json):
         self.name, self.store, self.request = name, CredentialStore(name, home), request
+        self.reset_grants = ClaudeResetGrants(request) if name == "claude" else None
         self.reset_retry_at = 0
         self.reset_backoff = 120
         self.reset_warning = None
@@ -195,6 +248,8 @@ class Provider:
         data = self.request(PROVIDERS[self.name][0], headers=headers)
         if self.name == "codex":
             self.add_reset_details(data, headers)
+        else:
+            self.reset_grants.add_to(data, creds["access_token"])
         return data
 
     def add_reset_details(self, data, headers):

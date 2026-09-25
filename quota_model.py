@@ -16,6 +16,13 @@ CLAUDE_LEGACY_WINDOWS = frozenset({
     "seven_day_sonnet", "seven_day_cowork", "seven_day_omelette",
     "seven_day_routines", "seven_day_overage_included", "seven_day_fable",
 })
+# Claude limit-reset grant eligibility (cedar_ember). These reasons mean the
+# server did not evaluate this account for our request, so the count is
+# unknown. Other reasons (no_grant, tier, seat, ...) mean no reset applies.
+CLAUDE_RESET_UNKNOWN = frozenset({"surface", "cli_version", "mobile", "unavailable", "unknown"})
+# Quota windows a Claude grant can clear, normalized to the meters shown here.
+CLAUDE_RESET_CLEARS = {"five_hour": "five_hour", "seven_day": "seven_day",
+                       "seven_day_overage_included": "seven_day"}
 
 
 def number(value):
@@ -75,6 +82,7 @@ class ResetBank:
     available_count: int
     next_expiry: float | None = None
     details_complete: bool = False
+    clears: tuple[str, ...] = ()
 
     def needs_refresh(self, now):
         return self.next_expiry is not None and self.next_expiry <= now
@@ -94,7 +102,9 @@ class ResetBank:
                 datetime.fromtimestamp(expiry, timezone.utc)
             except (ValueError, OverflowError, OSError):
                 return cls(count)
-        return cls(count, expiry, data.get("details_complete") is True)
+        clears = data.get("clears")
+        clears = tuple(c for c in clears if c in ("five_hour", "seven_day")) if isinstance(clears, (list, tuple)) else ()
+        return cls(count, expiry, data.get("details_complete") is True, clears)
 
 
 def parse_reset_bank(data):
@@ -129,6 +139,49 @@ def parse_reset_bank(data):
             continue
         expiries.append(expiry)
     return ResetBank(bank.available_count, min(expiries) if expiries else None, complete)
+
+
+def claude_reset_bank(data, now):
+    """Summarize Claude limit-reset grants; discard grant IDs and labels.
+
+    Returns None when the count is unknown: no status block, a reason that
+    means this account was not evaluated, or a grant this parser cannot read.
+    Paused, future, and ended grants are not available now and are excluded.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("eligible"), bool):
+        return None
+    if not data["eligible"]:
+        reason = data.get("ineligible_reason")
+        if not isinstance(reason, str) or reason in CLAUDE_RESET_UNKNOWN:
+            return None
+    grants = data.get("grants")
+    if grants is None and not data["eligible"]:
+        grants = []
+    if not isinstance(grants, list):
+        return None
+    count, expiries, clears = 0, [], set()
+    for grant in grants:
+        if not isinstance(grant, dict):
+            return None
+        left = grant.get("resets_left")
+        if isinstance(left, bool) or not isinstance(left, int) or left < 0:
+            return None
+        starts, ends = timestamp(grant.get("starts_at")), timestamp(grant.get("ends_at"))
+        if ((grant.get("starts_at") is not None and starts is None) or
+                (grant.get("ends_at") is not None and ends is None) or
+                not isinstance(grant.get("paused", False), bool)):
+            return None
+        if (not left or grant.get("paused") or (starts is not None and starts > now)
+                or (ends is not None and ends <= now)):
+            continue
+        count += left
+        if ends is not None:
+            expiries.append(ends)
+        for key in grant.get("clears") if isinstance(grant.get("clears"), list) else ():
+            if isinstance(key, str) and key in CLAUDE_RESET_CLEARS:
+                clears.add(CLAUDE_RESET_CLEARS[key])
+    return ResetBank(count, min(expiries) if expiries else None, True,
+                     tuple(k for k in ("five_hour", "seven_day") if k in clears))
 
 
 @dataclass(frozen=True)
@@ -221,7 +274,9 @@ def parse_claude(data, now):
     if not recognized:
         raise ValueError("Claude response has no recognized quota fields")
     windows.sort(key=lambda w: (w.key != "five_hour", w.key != "seven_day", w.key))
-    return Snapshot("claude", tuple(windows), now)
+    return Snapshot("claude", tuple(windows), now,
+                    reset_bank=claude_reset_bank(data.get("cedar_ember"), now),
+                    warning=data.get("_quota_strip_warning"))
 
 
 def parse_codex(data, now):

@@ -41,7 +41,22 @@ The application is deployed on a Raspberry Pi 3 Model B v1.2 using Raspberry Pi 
 
 - [Official app-server account contract](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md): `account/rateLimits/read` includes optional `rateLimitResetCredits`, authoritative `availableCount`, and potentially capped `credits` rows. The installed CLI's generated JSON Schema was also checked. `expiresAt: null` means no expiry; a missing detail list means only the count is known.
 - [How banked Codex resets work](https://help.openai.com/en/articles/20001498-how-banked-codex-resets-work): saved resets can expire and are distinct from purchased usage credits and automatic resets.
-- [Claude Max limits](https://support.claude.com/en/articles/11049741-what-is-the-max-plan) and [Claude usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans): scheduled allowances and pay-as-you-go usage. As of 2026-09-05, the reviewed documentation and live Claude usage schema did not expose an equivalent saved-reset bank. This is a verification boundary, not a guarantee about every account or future rollout.
+- [Claude Max limits](https://support.claude.com/en/articles/11049741-what-is-the-max-plan) and [Claude usage credits](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans): scheduled allowances and pay-as-you-go usage, which are distinct from limit-reset grants. On 2026-09-05 the reviewed documentation and plain usage schema exposed no Claude reset bank; that finding is superseded below.
+
+### Claude limit-reset grants (2026-09-25)
+
+Read from Claude Code 2.1.282's bundled client and confirmed with live read-only requests on 2026-09-25:
+
+- `GET /api/oauth/usage?cedar_ember=1&skip_spend=1` adds a `cedar_ember` status block: `eligible`, `ineligible_reason`, `at_limit`, `exhausted`, `grants[]`, `next_grant_id`, `weekly_resets_at`, `cooldown_until`. Each grant has `id`, `label`, `resets_total`, `resets_left`, `starts_at`, `ends_at`, `clears` (meter keys such as `five_hour`, `seven_day`, `seven_day_overage_included`), `paused`, `usable_now`, `use_requires_limit`, `percent_used`, and `blocking`. The plain query returns `cedar_ember: null`.
+- The server evaluates grants only for Claude Code's CLI surface. With a non-CLI user agent it returned `eligible: false, ineligible_reason: "surface"`; with `claude-cli/1.0.0 (external, cli)` it returned `cli_version`. `x-app: cli` alone had no effect. The client's reason enum is `config_off`, `tier`, `seat`, `mobile`, `surface`, `cli_version`, `no_grant`, `tenure`, `other_experiment`, `unavailable`, `unknown`. Quota Strip treats `surface`, `cli_version`, `mobile`, `unavailable`, `unknown`, and unrecognized reasons as an unknown count, and the rest as zero.
+- The test account had one grant, "one usage-limit reset for Pro and Max" from the Claude Opus 5.5 launch, valid 2026-09-22 to 2026-10-22, clearing the five-hour and weekly meters.
+- `?at_wall=1&skip_spend=1` adds `juniper_tide`, a separate once-a-week session-limit reset offered only at a limit (`not_at_wall` otherwise). It is not a bank and is not displayed.
+- Claims are `POST /api/organizations/{org}/reset_rate_limits`. Quota Strip never calls it.
+- Several rapid diagnostic requests produced HTTP 429 on the ordinary usage read, so the grant read is limited to every 10 minutes.
+
+### Codex Spark (2026-09-25)
+
+The account responses no longer report a Spark limit: `wham/usage` returned `additional_rate_limits: null`, and the app-server's `rateLimitsByLimitId` contained only `codex`. On 2026-09-05 the same account reported `GPT-5.3-Codex-Spark` five-hour and weekly windows. The parser still recognizes Spark if it returns. The usage response also gained `rate_limit_reset_credits.applicable_available_count` (0 while `available_count` was 1); its meaning is unverified and it is not used.
 
 The dashboard reads metadata only; it does not implement reset redemption. Ordinary usage remains available when optional bank metadata is missing or malformed.
 

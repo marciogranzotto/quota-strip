@@ -9,11 +9,11 @@ import unittest
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from quota_api import (CredentialStore, NoRedirect, Provider, QuotaError,
+from quota_api import (CLAUDE_RESET_URL, CredentialStore, NoRedirect, Provider, QuotaError,
                        atomic_json, retry_seconds, token_record)
 from quota_auth import account_id_from_token, claude_login, codex_login, pkce_challenge
-from quota_model import (ResetBank, Snapshot, Window, WEEK, FIVE_HOURS, countdown,
-                         parse_claude, parse_codex, parse_reset_bank)
+from quota_model import (ResetBank, Snapshot, Window, WEEK, FIVE_HOURS, claude_reset_bank,
+                         countdown, parse_claude, parse_codex, parse_reset_bank)
 from quota_state import Reading, State
 
 
@@ -252,6 +252,126 @@ class ResetBankTests(unittest.TestCase):
         self.assertIsNone(Snapshot.from_dict(encoded).reset_bank)
 
 
+def claude_grant(**changes):
+    grant = {"id": "test-private-id", "label": "test-private-label", "resets_total": 1,
+             "resets_left": 1, "starts_at": "1970-01-01T00:00:00+00:00",
+             "ends_at": "1970-01-01T00:16:40+00:00",
+             "clears": ["five_hour", "seven_day", "seven_day_overage_included"],
+             "paused": False, "usable_now": True, "use_requires_limit": False,
+             "percent_used": {"five_hour": 8}, "blocking": []}
+    grant.update(changes)
+    return grant
+
+
+def claude_grants(*grants, eligible=True, reason=None):
+    return {"eligible": eligible, "ineligible_reason": reason, "at_limit": False,
+            "exhausted": [], "grants": list(grants), "next_grant_id": None}
+
+
+class ClaudeResetGrantTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+
+    def test_available_grants_count_expiry_and_cleared_meters(self):
+        bank = claude_reset_bank(claude_grants(
+            claude_grant(), claude_grant(resets_left=2, ends_at=None, clears=["five_hour"])), 10)
+        self.assertEqual(bank, ResetBank(3, 1000, True, ("five_hour", "seven_day")))
+
+    def test_unavailable_grants_are_not_counted(self):
+        for grant in (claude_grant(paused=True), claude_grant(resets_left=0),
+                      claude_grant(starts_at=500), claude_grant(ends_at=10)):
+            with self.subTest(grant=grant):
+                self.assertEqual(claude_reset_bank(claude_grants(grant), 10), ResetBank(0, None, True))
+
+    def test_ineligible_account_is_zero_but_unevaluated_request_is_unknown(self):
+        self.assertEqual(claude_reset_bank(claude_grants(eligible=False, reason="no_grant"), 10),
+                         ResetBank(0, None, True))
+        for reason in ("surface", "cli_version", "unavailable", "unknown", None, 3):
+            with self.subTest(reason=reason):
+                self.assertIsNone(claude_reset_bank(claude_grants(eligible=False, reason=reason), 10))
+
+    def test_malformed_status_never_becomes_zero(self):
+        for status in (None, {}, {"eligible": "yes"}, claude_grants(eligible=True) | {"grants": None},
+                       claude_grants("bad"), claude_grants(claude_grant(resets_left=-1)),
+                       claude_grants(claude_grant(resets_left=True)),
+                       claude_grants(claude_grant(ends_at="bad")),
+                       claude_grants(claude_grant(paused="no"))):
+            with self.subTest(status=status):
+                self.assertIsNone(claude_reset_bank(status, 10))
+
+    def test_snapshot_round_trip_strips_grant_identifiers(self):
+        snap = parse_claude({"five_hour": {"utilization": 3},
+                             "cedar_ember": claude_grants(claude_grant())}, 10)
+        encoded = snap.to_dict()
+        self.assertNotIn("test-private", json.dumps(encoded))
+        self.assertEqual(Snapshot.from_dict(encoded), snap)
+        self.assertEqual(Snapshot.from_dict(json.loads(json.dumps(encoded))), snap)
+        self.assertEqual(snap.reset_bank.clears, ("five_hour", "seven_day"))
+        del encoded["reset_bank"]["clears"]  # Snapshots saved before this field.
+        self.assertEqual(Snapshot.from_dict(encoded).reset_bank.clears, ())
+
+    def test_grants_read_separately_on_slower_schedule_with_cli_agent(self):
+        clock = [0]
+        calls = []
+        def request(url, **kw):
+            calls.append(url)
+            if url == CLAUDE_RESET_URL:
+                self.assertTrue(kw["headers"]["User-Agent"].startswith("claude-cli/"))
+                self.assertIn("(external, cli)", kw["headers"]["User-Agent"])
+                return {"five_hour": {"utilization": 99}, "cedar_ember": claude_grants(
+                    claude_grant(ends_at="2100-01-01T00:00:00+00:00"))}
+            self.assertNotIn("claude-cli", kw["headers"].get("User-Agent", ""))
+            return {"five_hour": {"utilization": 7}, "cedar_ember": None}
+        provider = Provider("claude", self.home, request)
+        provider.reset_grants.monotonic = lambda: clock[0]
+        provider.store.save({"access_token": "test-only"})
+        snap = provider.fetch()
+        self.assertEqual(snap.windows[0].used, 7)  # Quotas come from the ordinary read.
+        self.assertEqual(snap.reset_bank.available_count, 1)
+        self.assertIsNone(snap.warning)
+        clock[0] = 599
+        self.assertEqual(provider.fetch().reset_bank.available_count, 1)
+        self.assertEqual(calls.count(CLAUDE_RESET_URL), 1)
+        clock[0] = 600
+        provider.fetch()
+        self.assertEqual(calls.count(CLAUDE_RESET_URL), 2)
+
+    def test_grant_failures_keep_quotas_and_back_off(self):
+        clock = [0]
+        responses = [QuotaError("Provider rate limited (HTTP 429)", 429, 0),
+                     {"cedar_ember": claude_grants(eligible=False, reason="surface")},
+                     {"cedar_ember": claude_grants(eligible=False, reason="no_grant")}]
+        grant_calls = []
+        def request(url, **kw):
+            if url != CLAUDE_RESET_URL:
+                return {"five_hour": {"utilization": 7}}
+            grant_calls.append(url)
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        provider = Provider("claude", self.home, request)
+        provider.reset_grants.monotonic = lambda: clock[0]
+        provider.store.save({"access_token": "test-only"})
+        first = provider.fetch()
+        self.assertEqual(first.windows[0].used, 7)
+        self.assertIsNone(first.reset_bank)
+        self.assertIn("429", first.warning)
+        clock[0] = 1199
+        provider.fetch()
+        self.assertEqual(len(grant_calls), 1)  # Backed off to 20 minutes.
+        clock[0] = 1200
+        second = provider.fetch()
+        self.assertIsNone(second.reset_bank)
+        self.assertIn("surface", second.warning)
+        clock[0] = 1200 + 2400
+        third = provider.fetch()
+        self.assertEqual(third.reset_bank, ResetBank(0, None, True))
+        self.assertIsNone(third.warning)
+
+
 class StorageAndAuthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -278,6 +398,8 @@ class StorageAndAuthTests(unittest.TestCase):
     def test_expired_token_refresh_persisted_once(self):
         calls = []
         def request(url, **kw):
+            if url == CLAUDE_RESET_URL:  # Optional grant read; covered separately.
+                return {"cedar_ember": None}
             calls.append((url, kw))
             if "oauth/token" in url:
                 return {"access_token": "new", "refresh_token": "new-refresh", "expires_in": 3600}

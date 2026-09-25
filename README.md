@@ -20,7 +20,7 @@ Runs natively on macOS and independently on Raspberry Pi.
 
 - **Claude:** current five-hour usage, the overall weekly quota, and model-specific weekly limits such as **Fable**.
 - **Codex:** the quota windows reported by your ChatGPT account, including separate **Spark** limits when available.
-- **Banked Codex resets:** the available count and next expiry, read from the same account response.
+- **Banked Codex resets and Claude limit resets:** the available count and next expiry, plus which Claude meters a reset clears.
 - **Weekly pacing:** an end-of-day allowance marker, reset countdowns, and how much room you have left today.
 - **Five-hour pacing:** a moving allowance marker based on time remaining until reset, with current headroom or over-budget usage.
 - **Segmented bars:** seven equal daily portions for weekly quotas and five hourly portions for five-hour quotas, with partial segments showing exact usage.
@@ -112,7 +112,9 @@ The server's total is authoritative, even when it returns only some detail rows.
 
 Only the count, earliest supplied expiry, and detail-completeness flag enter the local snapshot. Credit identifiers and descriptions are discarded. Both collection modes support this indicator. If the optional expiry request fails, standalone mode keeps the live count and ordinary quotas, reports partial data, and backs off that request independently.
 
-No equivalent Claude banked-reset count has been verified. Claude's paid usage credits and automatic quota resets are separate concepts; the dashboard does not infer a bank from them.
+The Claude header shows **limit resets**: grants such as a launch promotion that can clear the five-hour and weekly meters. The count covers grants that are active now, and the note shows the earliest expiry and which meters a reset clears (for example **5H + WEEKLY**). Paused, not-yet-started, and ended grants are excluded. Only the count, earliest expiry, and cleared meters enter the snapshot; grant identifiers and labels are discarded.
+
+Claude reports grants only through an optional query on the same usage endpoint, and only to requests that identify as a current Claude Code CLI. Quota Strip makes that one read-only request with a Claude Code user agent, separately from the ordinary quota read, at most every 10 minutes, with its own backoff. If the server does not evaluate the account for the request (for example it rejects the client surface or version), the header shows **Count unavailable** and the footer reports partial data; ordinary quotas are unaffected. An account with no applicable grant shows zero. Claude's paid usage credits and the separate once-a-week session reset are not counted. Quota Strip never claims a reset.
 
 ## Configuration
 

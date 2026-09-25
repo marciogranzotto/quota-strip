@@ -10,13 +10,14 @@ import subprocess
 import threading
 import time
 
-from quota_api import QuotaError, request_json, PROVIDERS
+from quota_api import ClaudeResetGrants, QuotaError, request_json, PROVIDERS
 from quota_model import parse_claude, parse_codex
 
 
 class LocalClaude:
     def __init__(self, monotonic=time.monotonic):
         self.monotonic = monotonic
+        self.reset_grants = ClaudeResetGrants(monotonic=monotonic)
         self.next_attempt = 0
         self.backoff = 120
         self.last_error = None
@@ -76,6 +77,7 @@ class LocalClaude:
             response = request_json(PROVIDERS["claude"][0], headers={
                 "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
             })
+            self.reset_grants.add_to(response, token)
             return parse_claude(response, time.time())
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
             raise QuotaError("Claude local sign-in unavailable") from None
