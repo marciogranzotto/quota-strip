@@ -52,7 +52,7 @@ Read from Claude Code 2.1.282's bundled client and confirmed with live read-only
 - The test account had one grant, "one usage-limit reset for Pro and Max" from the Claude Opus 5.5 launch, valid 2026-09-22 to 2026-10-22, clearing the five-hour and weekly meters.
 - `?at_wall=1&skip_spend=1` adds `juniper_tide`, a separate once-a-week session-limit reset offered only at a limit (`not_at_wall` otherwise). It is not a bank and is not displayed.
 - Claims are `POST /api/organizations/{org}/reset_rate_limits`. Quota Strip never calls it.
-- Several rapid diagnostic requests produced HTTP 429 on the ordinary usage read, so the grant read is limited to every 10 minutes.
+- The usage endpoint throttles each token over a short window. A grant read sent immediately after an ordinary usage read returned HTTP 429 every time (with `Retry-After: 0`), while the same grant read alone returned 200. The grant query's response carries the ordinary quota fields too, so it replaces the ordinary read at most every 10 minutes rather than adding a request. Claude Code likewise fetches either the plain or a grant-bearing query, never both.
 
 ### Codex Spark (2026-09-25)
 

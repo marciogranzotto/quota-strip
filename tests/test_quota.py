@@ -6,11 +6,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
-from quota_api import (CLAUDE_RESET_URL, CredentialStore, NoRedirect, Provider, QuotaError,
-                       atomic_json, retry_seconds, token_record)
+from quota_api import (CLAUDE_RESET_URL, PROVIDERS, CredentialStore, NoRedirect, Provider,
+                       QuotaError, atomic_json, retry_seconds, token_record)
 from quota_auth import account_id_from_token, claude_login, codex_login, pkce_challenge
 from quota_model import (ResetBank, Snapshot, Window, WEEK, FIVE_HOURS, claude_reset_bank,
                          countdown, parse_claude, parse_codex, parse_reset_bank)
@@ -312,7 +312,7 @@ class ClaudeResetGrantTests(unittest.TestCase):
         del encoded["reset_bank"]["clears"]  # Snapshots saved before this field.
         self.assertEqual(Snapshot.from_dict(encoded).reset_bank.clears, ())
 
-    def test_grants_read_separately_on_slower_schedule_with_cli_agent(self):
+    def test_grants_ride_on_one_quota_request_every_ten_minutes(self):
         clock = [0]
         calls = []
         def request(url, **kw):
@@ -320,34 +320,40 @@ class ClaudeResetGrantTests(unittest.TestCase):
             if url == CLAUDE_RESET_URL:
                 self.assertTrue(kw["headers"]["User-Agent"].startswith("claude-cli/"))
                 self.assertIn("(external, cli)", kw["headers"]["User-Agent"])
-                return {"five_hour": {"utilization": 99}, "cedar_ember": claude_grants(
+                return {"five_hour": {"utilization": 9}, "cedar_ember": claude_grants(
                     claude_grant(ends_at="2100-01-01T00:00:00+00:00"))}
-            self.assertNotIn("claude-cli", kw["headers"].get("User-Agent", ""))
+            self.assertNotIn("User-Agent", kw["headers"])
             return {"five_hour": {"utilization": 7}, "cedar_ember": None}
         provider = Provider("claude", self.home, request)
         provider.reset_grants.monotonic = lambda: clock[0]
         provider.store.save({"access_token": "test-only"})
         snap = provider.fetch()
-        self.assertEqual(snap.windows[0].used, 7)  # Quotas come from the ordinary read.
+        self.assertEqual(calls, [CLAUDE_RESET_URL])  # Never a second, back-to-back request.
+        self.assertEqual(snap.windows[0].used, 9)
         self.assertEqual(snap.reset_bank.available_count, 1)
         self.assertIsNone(snap.warning)
         clock[0] = 599
-        self.assertEqual(provider.fetch().reset_bank.available_count, 1)
-        self.assertEqual(calls.count(CLAUDE_RESET_URL), 1)
+        snap = provider.fetch()
+        self.assertEqual(calls[-1], PROVIDERS["claude"][0])
+        self.assertEqual(snap.windows[0].used, 7)
+        self.assertEqual(snap.reset_bank.available_count, 1)  # Retained between grant reads.
         clock[0] = 600
         provider.fetch()
-        self.assertEqual(calls.count(CLAUDE_RESET_URL), 2)
+        self.assertEqual(calls[-1], CLAUDE_RESET_URL)
+        self.assertEqual(len(calls), 3)
 
-    def test_grant_failures_keep_quotas_and_back_off(self):
+    def test_failed_grant_read_falls_back_to_plain_quota_read(self):
         clock = [0]
         responses = [QuotaError("Provider rate limited (HTTP 429)", 429, 0),
-                     {"cedar_ember": claude_grants(eligible=False, reason="surface")},
-                     {"cedar_ember": claude_grants(eligible=False, reason="no_grant")}]
-        grant_calls = []
+                     {"five_hour": {"utilization": 7},
+                      "cedar_ember": claude_grants(eligible=False, reason="surface")},
+                     {"five_hour": {"utilization": 7},
+                      "cedar_ember": claude_grants(eligible=False, reason="no_grant")}]
+        calls = []
         def request(url, **kw):
+            calls.append(url)
             if url != CLAUDE_RESET_URL:
-                return {"five_hour": {"utilization": 7}}
-            grant_calls.append(url)
+                return {"five_hour": {"utilization": 7}, "cedar_ember": None}
             result = responses.pop(0)
             if isinstance(result, Exception):
                 raise result
@@ -355,21 +361,32 @@ class ClaudeResetGrantTests(unittest.TestCase):
         provider = Provider("claude", self.home, request)
         provider.reset_grants.monotonic = lambda: clock[0]
         provider.store.save({"access_token": "test-only"})
-        first = provider.fetch()
-        self.assertEqual(first.windows[0].used, 7)
-        self.assertIsNone(first.reset_bank)
-        self.assertIn("429", first.warning)
+        with self.assertRaises(QuotaError):
+            provider.fetch()  # The poll backs off as for any quota failure.
+        retried = provider.fetch()
+        self.assertEqual(calls, [CLAUDE_RESET_URL, PROVIDERS["claude"][0]])
+        self.assertEqual(retried.windows[0].used, 7)
+        self.assertIsNone(retried.reset_bank)
+        self.assertIn("429", retried.warning)
         clock[0] = 1199
         provider.fetch()
-        self.assertEqual(len(grant_calls), 1)  # Backed off to 20 minutes.
+        self.assertEqual(calls.count(CLAUDE_RESET_URL), 1)  # Backed off to 20 minutes.
         clock[0] = 1200
         second = provider.fetch()
+        self.assertEqual(second.windows[0].used, 7)
         self.assertIsNone(second.reset_bank)
         self.assertIn("surface", second.warning)
         clock[0] = 1200 + 2400
         third = provider.fetch()
         self.assertEqual(third.reset_bank, ResetBank(0, None, True))
         self.assertIsNone(third.warning)
+
+    def test_expired_token_does_not_back_off_grants(self):
+        provider = Provider("claude", self.home, lambda *a, **kw: {})
+        with self.assertRaises(QuotaError):
+            provider.reset_grants.read(Mock(side_effect=QuotaError("Sign-in expired", 401)), "x")
+        self.assertEqual(provider.reset_grants.retry_at, 0)
+        self.assertIsNone(provider.reset_grants.warning)
 
 
 class StorageAndAuthTests(unittest.TestCase):
@@ -398,8 +415,6 @@ class StorageAndAuthTests(unittest.TestCase):
     def test_expired_token_refresh_persisted_once(self):
         calls = []
         def request(url, **kw):
-            if url == CLAUDE_RESET_URL:  # Optional grant read; covered separately.
-                return {"cedar_ember": None}
             calls.append((url, kw))
             if "oauth/token" in url:
                 return {"access_token": "new", "refresh_token": "new-refresh", "expires_in": 3600}

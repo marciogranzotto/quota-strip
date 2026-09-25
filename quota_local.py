@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 
-from quota_api import ClaudeResetGrants, QuotaError, request_json, PROVIDERS
+from quota_api import ClaudeResetGrants, QuotaError, request_json
 from quota_model import parse_claude, parse_codex
 
 
@@ -74,11 +74,7 @@ class LocalClaude:
             expiry = creds.get("expiresAt")
             if isinstance(expiry, (int, float)) and expiry <= (time.time() + 60) * 1000:
                 raise QuotaError("Claude sign-in expired; open Claude Code")
-            response = request_json(PROVIDERS["claude"][0], headers={
-                "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
-            })
-            self.reset_grants.add_to(response, token)
-            return parse_claude(response, time.time())
+            return parse_claude(self.reset_grants.read(request_json, token), time.time())
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
             raise QuotaError("Claude local sign-in unavailable") from None
 

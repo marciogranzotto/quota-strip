@@ -156,54 +156,64 @@ def token_record(response, previous=None):
 
 
 class ClaudeResetGrants:
-    """Optional read of Claude limit-reset grants, separate from quota reads.
+    """Claude limit-reset grants, read within the ordinary usage request.
 
-    Grants change rarely and share the usage endpoint's rate limit, so they are
-    read at most every ten minutes and back off independently. Only a read-only
-    status query is made; resets are never claimed.
+    The usage endpoint rejects a second request from the same token in quick
+    succession (HTTP 429), so grants are never fetched separately. At most every
+    ten minutes the quota read itself uses the grant query, which returns the
+    same quota fields plus cedar_ember. A failed grant-bearing read backs off
+    the grant query, so the next quota attempt uses the plain request. Only
+    status is read; resets are never claimed.
     """
     interval = 600
 
-    def __init__(self, request=request_json, monotonic=time.monotonic):
-        self.request, self.monotonic = request, monotonic
+    def __init__(self, monotonic=time.monotonic):
+        self.monotonic = monotonic
         self.status = None
         self.retry_at = 0
         self.backoff = self.interval
         self.warning = None
 
-    def add_to(self, data, token):
-        if self.monotonic() >= self.retry_at:
+    def read(self, request, token):
+        headers = {"Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20"}
+        if self.monotonic() < self.retry_at:
+            data = request(PROVIDERS["claude"][0], headers=headers)
+        else:
             try:
-                response = self.request(CLAUDE_RESET_URL, headers={
-                    "Authorization": "Bearer " + token, "anthropic-beta": "oauth-2025-04-20",
-                    "User-Agent": CLAUDE_CLI_AGENT})
-                status = response.get("cedar_ember")
-                if isinstance(status, dict) and status.get("eligible") is False:
-                    reason = status.get("ineligible_reason")
-                    if not isinstance(reason, str) or reason in CLAUDE_RESET_UNKNOWN:
-                        raise QuotaError(f"not reported ({reason if isinstance(reason, str) else 'unknown'})")
-                if claude_reset_bank(status, time.time()) is None:
-                    raise QuotaError("response changed")
+                data = request(CLAUDE_RESET_URL, headers={**headers, "User-Agent": CLAUDE_CLI_AGENT})
             except QuotaError as exc:
-                self.status = None
-                self.backoff = min(self.backoff * 2, 3600)
-                self.retry_at = self.monotonic() + max(self.backoff, exc.retry_after)
-                self.warning = f"Reset count unavailable: {exc}"
-            else:
-                self.status = status
-                self.backoff = self.interval
-                self.retry_at = self.monotonic() + self.interval
-                self.warning = None
+                if exc.status != 401:  # An expired token is not the grant query's fault.
+                    self.failed(str(exc), exc.retry_after)
+                raise
+            self.record(data.get("cedar_ember"))
         if self.status is not None:
             data["cedar_ember"] = self.status
         if self.warning:
             data["_quota_strip_warning"] = self.warning
+        return data
+
+    def record(self, status):
+        if isinstance(status, dict) and status.get("eligible") is False:
+            reason = status.get("ineligible_reason")
+            if not isinstance(reason, str) or reason in CLAUDE_RESET_UNKNOWN:
+                return self.failed(f"not reported ({reason if isinstance(reason, str) else 'unknown'})")
+        if claude_reset_bank(status, time.time()) is None:
+            return self.failed("response changed")
+        self.status, self.warning = status, None
+        self.backoff = self.interval
+        self.retry_at = self.monotonic() + self.interval
+
+    def failed(self, reason, retry_after=0):
+        self.status = None
+        self.warning = f"Reset count unavailable: {reason}"
+        self.backoff = min(self.backoff * 2, 3600)
+        self.retry_at = self.monotonic() + max(self.backoff, retry_after)
 
 
 class Provider:
     def __init__(self, name, home=None, request=request_json):
         self.name, self.store, self.request = name, CredentialStore(name, home), request
-        self.reset_grants = ClaudeResetGrants(request) if name == "claude" else None
+        self.reset_grants = ClaudeResetGrants() if name == "claude" else None
         self.reset_retry_at = 0
         self.reset_backoff = 120
         self.reset_warning = None
@@ -240,16 +250,13 @@ class Provider:
             raise QuotaError("Quota response changed; update collector") from None
 
     def get_usage(self, creds):
-        headers = {"Authorization": "Bearer " + creds["access_token"]}
         if self.name == "claude":
-            headers["anthropic-beta"] = "oauth-2025-04-20"
-        elif creds.get("account_id"):
+            return self.reset_grants.read(self.request, creds["access_token"])
+        headers = {"Authorization": "Bearer " + creds["access_token"]}
+        if creds.get("account_id"):
             headers["ChatGPT-Account-Id"] = creds["account_id"]
         data = self.request(PROVIDERS[self.name][0], headers=headers)
-        if self.name == "codex":
-            self.add_reset_details(data, headers)
-        else:
-            self.reset_grants.add_to(data, creds["access_token"])
+        self.add_reset_details(data, headers)
         return data
 
     def add_reset_details(self, data, headers):
