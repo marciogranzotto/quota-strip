@@ -49,8 +49,6 @@ def demo(now):
     }, now)
     codex = parse_codex({"rateLimitsByLimitId": {
         "codex": {"primary": {"usedPercent": 54, "windowDurationMins": 10080, "resetsAt": now + 2*86400}},
-        "spark": {"limitName": "Spark", "primary": {"usedPercent": 0, "windowDurationMins": 300, "resetsAt": now + 12000},
-                  "secondary": {"usedPercent": 0, "windowDurationMins": 10080, "resetsAt": now + 5*86400}},
     }, "rateLimitResetCredits": {"availableCount": 2, "credits": [
         {"status": "available", "expiresAt": now + 3*86400},
         {"status": "available", "expiresAt": now + 12*86400},

@@ -10,7 +10,7 @@ Runs natively on macOS and independently on Raspberry Pi.
 [![CI](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml/badge.svg)](https://github.com/marciogranzotto/quota-strip/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-![Quota Strip showing Claude, Fable, Codex, and Spark meters with illustrative data](docs/preview.png)
+![Quota Strip showing Claude, Fable, and Codex meters with limit and banked resets, using illustrative data](docs/preview.png)
 
 *The preview uses synthetic demo data. No account is needed to try it.*
 
