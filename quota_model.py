@@ -1,7 +1,7 @@
 """Provider-neutral quota windows and weekly/five-hour pacing rules."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time as day_time, timedelta, timezone
 import math
 from zoneinfo import ZoneInfo
@@ -277,6 +277,44 @@ def parse_claude(data, now):
     return Snapshot("claude", tuple(windows), now,
                     reset_bank=claude_reset_bank(data.get("cedar_ember"), now),
                     warning=data.get("_quota_strip_warning"))
+
+
+def parse_cswap(row, now):
+    """Normalize one account row of `cswap list --json` (schema version 1).
+
+    cswap polls the account itself; its usage is the same Claude endpoint
+    reshaped, so it is mapped back and parsed by parse_claude. A row without
+    a current reading falls back to cswap's last good one, which keeps its
+    original observation time and therefore shows as stale. cswap does not
+    report limit-reset grants, so the reset count stays unavailable.
+    """
+    if not isinstance(row, dict):
+        raise ValueError("Invalid cswap account")
+    status = row.get("usageStatus")
+    note = row.get("usageStatusText") if isinstance(row.get("usageStatusText"), str) else None
+    if status == "ok" and isinstance(row.get("usage"), dict):
+        usage, fetched, age, warning = row["usage"], row.get("usageFetchedAt"), row.get("usageAgeSeconds"), None
+    elif isinstance(row.get("lastGoodUsage"), dict):
+        usage, fetched, age = row["lastGoodUsage"], row.get("lastGoodFetchedAt"), row.get("lastGoodAgeSeconds")
+        warning = note or "cswap usage unavailable"
+    else:
+        return None
+    observed = timestamp(fetched)
+    if observed is None and number(age) is not None:
+        observed = now - number(age)
+    if observed is None:
+        raise ValueError("cswap reading has no observation time")
+    scoped = usage.get("scoped") or []
+    if not isinstance(scoped, list):
+        raise ValueError("Invalid cswap scoped windows")
+    data = {key: {"utilization": usage[name].get("pct"), "resets_at": usage[name].get("resetsAt")}
+            for key, name in (("five_hour", "fiveHour"), ("seven_day", "sevenDay"))
+            if isinstance(usage.get(name), dict)}
+    data["limits"] = [{"kind": "weekly_scoped", "percent": w.get("pct"), "resets_at": w.get("resetsAt"),
+                       "scope": {"model": {"display_name": w.get("name")}}}
+                      for w in scoped if isinstance(w, dict)]
+    snapshot = parse_claude(data, observed)
+    return replace(snapshot, source="cswap", warning=warning)
 
 
 def parse_codex(data, now):

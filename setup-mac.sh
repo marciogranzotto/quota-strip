@@ -18,11 +18,16 @@ fi
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python - <<'PY'
 import json, pathlib, shutil
+config = {}
 binary = shutil.which('codex')
 if binary:
-    pathlib.Path('.local-config.json').write_text(json.dumps({'codex_bin': binary}))
+    config['codex_bin'] = binary
 else:
     print('Codex CLI was not found. Put codex on PATH or set QUOTA_CODEX_BIN before launch.')
+# Optional: with cswap installed, Claude accounts are read through its store.
+if shutil.which('cswap'):
+    config['cswap_bin'] = shutil.which('cswap')
+pathlib.Path('.local-config.json').write_text(json.dumps(config))
 PY
 chmod +x run.sh 'Launch Quota Strip.command'
 echo "Ready. Open Launch Quota Strip.command or run ./run.sh --source local --windowed"

@@ -10,7 +10,7 @@ The optional controller runs independently of the graphical dashboard. It uses [
 
 ## Quota sensors
 
-Each reported quota window automatically gets **Used**, **Remaining**, **Reset**, and (for weekly/five-hour windows) **Pacing allowance** sensors. This includes Claude, Fable, Codex, Spark, and other windows when the provider supplies them. Codex also exposes **Banked resets** and **Banked reset expiry**. The expiry sensor has a `details_complete` attribute: false means it is only the earliest listed expiry, not a verified earliest expiry across the entire bank.
+Each reported quota window automatically gets **Used**, **Remaining**, **Reset**, and (for weekly/five-hour windows) **Pacing allowance** sensors. This includes Claude, Fable, Codex, Spark, and other windows when the provider supplies them. A second Claude account gets its own entities named **Claude2 …**; the first account's entity IDs are unchanged. Codex also exposes **Banked resets** and **Banked reset expiry**. The expiry sensor has a `details_complete` attribute: false means it is only the earliest listed expiry, not a verified earliest expiry across the entire bank.
 
 Sensors share the existing Quota Strip device in Home Assistant and are available for dashboards, history, and automations. Names include the provider and window; no separate integration configuration is needed. Percentages represent the full quota: 43% used means 57% remaining. Pacing uses the same original-week allowance by local midnight and elapsed five-hour allowance as the strip display; it does not redistribute the remaining quota.
 

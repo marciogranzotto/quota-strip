@@ -13,6 +13,8 @@ import time
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+from dataclasses import dataclass
+from quota_accounts import ACCOUNTS, selected
 from quota_model import Snapshot, Window, WEEK, FIVE_HOURS, countdown, rounded
 from quota_state import Reading, State, poll
 
@@ -34,7 +36,35 @@ def rate_color(used):
     return RED if used >= 95 else ORANGE if used >= 75 else YELLOW if used >= 50 else GREEN
 
 
-def demo(now):
+@dataclass(frozen=True)
+class Style:
+    """Panel geometry. Offsets are from the panel's left edge or the row's top."""
+    pad: int
+    logo: int
+    title: tuple            # x, y, size
+    badge: tuple            # right inset, y, size
+    bank: tuple             # x, y of the count; its note sits below at y + bank_gap
+    bank_sizes: tuple
+    bank_gap: int
+    rows: tuple             # first row y and row gap, for up to two and for three rows
+    label: tuple            # y, size
+    value: tuple            # y, size
+    bar: tuple              # y, height
+    meta: tuple             # y, size
+    label_room: int         # Width kept for the value beside the label.
+    waiting: tuple          # title size, detail y, detail size
+
+
+# Today's two-panel style, and option A's narrower three-panel style.
+FULL = Style(30, 44, (86, 36, 30), (24, 44, 19), (330, 38), (19, 15), 25, ((115, 146), (93, 106)),
+             (5, 20), (-6, 38), (45, 16), (72, 18), 350, (35, 218, 23))
+COMPACT = Style(28, 40, (78, 36, 28), (22, 44, 17), (28, 90), (16, 14), 22, ((150, 110), (150, 86)),
+                (3, 17), (-4, 30), (36, 14), (58, 15), 260, (30, 210, 19))
+# (x, width) per panel for one to three accounts; two keeps today's geometry.
+PANELS = {1: ((20, 1880),), 2: ((20, 928), (972, 928)), 3: ((20, 613), (653, 613), (1286, 614))}
+
+
+def demo(now, accounts):
     # Synthetic examples only: demo mode never reads credentials or account data.
     from quota_model import parse_claude, parse_codex
     claude = parse_claude({
@@ -53,7 +83,16 @@ def demo(now):
         {"status": "available", "expiresAt": now + 3*86400},
         {"status": "available", "expiresAt": now + 12*86400},
     ]}}, now)
-    return {"claude": Reading(claude), "codex": Reading(codex)}
+    claude2 = parse_claude({
+        "cedar_ember": {"eligible": True, "grants": []},
+        "five_hour": {"utilization": 71, "resets_at": now + 2*3600 + 45*60},
+        "seven_day": {"utilization": 48, "resets_at": now + 4*86400 + 2*3600 + 40*60},
+        "limits": [{"kind": "weekly_scoped", "percent": 3,
+                    "resets_at": now + 4*86400 + 2*3600 + 40*60,
+                    "scope": {"model": {"display_name": "Fable"}}}],
+    }, now)
+    samples = {"claude": claude, "claude2": claude2, "codex": codex}
+    return {a.id: Reading(samples[a.id]) for a in accounts}
 
 
 class Display:
@@ -67,6 +106,7 @@ class Display:
             name: pygame.image.load(str(assets / filename)).convert_alpha()
             for name, filename in (("claude", "claude.png"), ("codex", "chatgpt.png"))
         }
+        self.scaled = {}
 
     def text(self, value, x, y, size=22, color=FG, bold=False, right=False, max_width=None):
         key = (size, bold)
@@ -80,8 +120,15 @@ class Display:
         image = font.render(value, True, color)
         self.surface.blit(image, image.get_rect(topright=(x, y)) if right else (x, y))
 
-    def bar(self, x, y, width, used, budget=None, unavailable=False, accent=BLUE, segments=1):
-        fill = self.pg.Rect(x, y, int(width * max(0, min(100, used)) / 100), 16)
+    def logo(self, provider, size):
+        if (provider, size) not in self.scaled:
+            image = self.logos[provider]
+            self.scaled[provider, size] = (image if image.get_width() == size else
+                                           self.pg.transform.smoothscale(image, (size, size)))
+        return self.scaled[provider, size]
+
+    def bar(self, x, y, width, used, budget=None, unavailable=False, accent=BLUE, segments=1, height=16):
+        fill = self.pg.Rect(x, y, int(width * max(0, min(100, used)) / 100), height)
         color = MUTED if unavailable else accent if budget is not None else rate_color(used)
         mark = int(width * budget / 100) if budget is not None else None
         clip = self.surface.get_clip()
@@ -90,22 +137,22 @@ class Display:
             # scale and daily allowance marker aligned across the whole bar.
             left = round(width * index / segments) + (3 if index else 0)
             right = round(width * (index + 1) / segments) - (3 if index < segments - 1 else 0)
-            segment = self.pg.Rect(x + left, y, right - left, 16)
+            segment = self.pg.Rect(x + left, y, right - left, height)
             self.pg.draw.rect(self.surface, TRACK, segment, border_radius=4)
             filled = segment.clip(fill)
             if filled.width:
                 radius = min(4, filled.width // 2)
                 self.pg.draw.rect(self.surface, color, filled, border_radius=radius)
                 if mark is not None and not unavailable and used > budget:
-                    over_budget = self.pg.Rect(x + mark, y, width - mark, 16)
+                    over_budget = self.pg.Rect(x + mark, y, width - mark, height)
                     self.surface.set_clip(clip.clip(over_budget))
                     self.pg.draw.rect(self.surface, RED, filled, border_radius=radius)
                     self.surface.set_clip(clip)
         if mark is not None and not unavailable:
             self.pg.draw.line(self.surface, RED if used > budget else GREEN,
-                              (x + min(width - 1, mark), y - 5), (x + min(width - 1, mark), y + 21), 3)
+                              (x + min(width - 1, mark), y - 5), (x + min(width - 1, mark), y + height + 5), 3)
 
-    def window(self, w, x, y, width, now, stale):
+    def window(self, w, x, y, width, now, stale, s=FULL):
         stale = stale or w.stale or (w.observed_at is not None and
                 (now - w.observed_at > self.stale_after or w.observed_at > now + 60))
         expired = w.expired(now)
@@ -117,14 +164,15 @@ class Display:
             status = GREEN if w.used <= budget else RED
         label = (w.bucket + " / " if w.bucket else "") + w.label
         label_color = PURPLE if w.key == "seven_day_fable" else MUTED
-        self.text(label.upper(), x, y + 5, 20, label_color, True, max_width=width-350)
+        self.text(label.upper(), x, y + s.label[0], s.label[1], label_color, True,
+                  max_width=max(100, width - s.label_room))
         value = f"{rounded(w.used)}%"
         if budget is not None:
             value += f" / {rounded(budget)}%"
-        self.text(value, x + width, y - 6, 38, status, True, right=True)
+        self.text(value, x + width, y + s.value[0], s.value[1], status, True, right=True)
         segments = {WEEK: 7, FIVE_HOURS: 5}.get(w.seconds, 1)
-        self.bar(x, y + 45, width, w.used, budget, unavailable, accent, segments)
-        self.text(countdown(w.resets_at, now), x, y + 72, 18, MUTED, max_width=width/2)
+        self.bar(x, y + s.bar[0], width, w.used, budget, unavailable, accent, segments, s.bar[1])
+        self.text(countdown(w.resets_at, now), x, y + s.meta[0], s.meta[1], MUTED, max_width=width/2)
         if expired:
             note = "Awaiting fresh quota"
         elif stale:
@@ -138,19 +186,20 @@ class Display:
                 note = f"{abs(delta):.0f}% left today" if delta >= 0 else f"{abs(delta):.0f}% over today's budget"
         else:
             note = f"{max(0, 100-w.used):.0f}% remaining"
-        self.text(note, x + width, y + 72, 18, status, right=True, max_width=width/2-10)
+        self.text(note, x + width, y + s.meta[0], s.meta[1], status, right=True, max_width=width/2-10)
 
-    def reset_bank(self, bank, x, now, stale, noun):
+    def reset_bank(self, bank, x, y, width, now, stale, noun, s=FULL):
+        big, small = s.bank_sizes
         if bank is None:
-            self.text(f"{noun}S —", x, 38, 19, MUTED, True)
-            self.text("Count unavailable", x, 63, 15, MUTED)
+            self.text(f"{noun}S —", x, y, big, MUTED, True)
+            self.text("Count unavailable", x, y + s.bank_gap, small, MUTED)
             return
         old = stale or bank.needs_refresh(now)
         color = MUTED if old or not bank.available_count else GREEN
         clears = " + ".join({"five_hour": "5H", "seven_day": "WEEKLY"}[c] for c in bank.clears)
         self.text(f"{bank.available_count} {noun}" + ("S" if bank.available_count != 1 else "")
                   + (f" · {clears}" if clears and bank.available_count else ""),
-                  x, 38, 19, color, True, max_width=360)
+                  x, y, big, color, True, max_width=width)
         if old:
             note = "Last known · awaiting update"
         elif bank.available_count == 0:
@@ -163,51 +212,58 @@ class Display:
                 color = ORANGE
         else:
             note = "No expiry" if bank.details_complete else "Expiry unavailable"
-        self.text(note, x, 63, 15, color, max_width=360)
+        self.text(note, x, y + s.bank_gap, small, color, max_width=width)
 
-    def panel(self, name, reading, x, now):
-        self.pg.draw.rect(self.surface, PANEL, (x, 20, 928, 414), border_radius=14)
-        self.surface.blit(self.logos[name], (x + 26, 34))
-        self.text("CLAUDE" if name == "claude" else "CODEX", x + 86, 36, 30, FG, True)
-        self.text("MAX 20×" if name == "claude" else "CHATGPT PRO", x + 904, 44, 19, MUTED, right=True)
+    def panel(self, account, reading, x, width, now):
+        s = FULL if width >= 900 else COMPACT
+        inner = width - 2 * s.pad
+        self.pg.draw.rect(self.surface, PANEL, (x, 20, width, 414), border_radius=14)
+        self.surface.blit(self.logo(account.provider, s.logo), (x + s.pad - 4, 34 - (s.logo - 44) // 2))
+        self.text(account.title, x + s.title[0], s.title[1], s.title[2], FG, True)
+        self.text(account.badge, x + width - s.badge[0], s.badge[1], s.badge[2], MUTED, right=True)
         snapshot = reading.snapshot
         stale = reading.stale(now, self.stale_after)
-        self.reset_bank(snapshot.reset_bank if snapshot else None, x + 330, now, stale,
-                        "BANKED RESET" if name == "codex" else "LIMIT RESET")
+        bank_x = x + s.bank[0]
+        self.reset_bank(snapshot.reset_bank if snapshot else None, bank_x, s.bank[1],
+                        min(360, x + width - 150 - bank_x) if s is FULL else inner, now, stale,
+                        "BANKED RESET" if account.provider == "codex" else "LIMIT RESET", s)
         if snapshot is None:
-            self.text("Waiting for quota", x + 30, 159, 35, FG, True)
-            self.text(reading.error or "Connecting…", x + 30, 218, 23, MUTED, max_width=865)
+            self.text("Waiting for quota", x + s.pad, 159, s.waiting[0], FG, True)
+            self.text(reading.error or "Connecting…", x + s.pad, s.waiting[1], s.waiting[2], MUTED,
+                      max_width=inner)
             return
         windows = list(snapshot.windows)
         missing_models = (snapshot.source == "status line" and snapshot.warning and
                           not any(w.key.startswith("seven_day_") for w in windows))
         if not windows:
-            self.text("No quota windows reported", x + 30, 184, 30, MUTED)
+            self.text("No quota windows reported", x + s.pad, 184, s.waiting[0] - 5, MUTED)
         # Keep the first two windows visible; rotate only overflow in slot three.
         if len(windows) > 3:
             slot = int(now // 15) % (len(windows) - 2)
             windows = windows[:2] + [windows[2 + slot]]
-            self.text(f"More limits {slot+1}/{len(snapshot.windows)-2}", x + 904, 85, 14, MUTED, right=True)
+            more_y = 85 if s is FULL else s.bank[1] + s.bank_gap
+            self.text(f"More limits {slot+1}/{len(snapshot.windows)-2}", x + width - s.badge[0],
+                      more_y, 14, MUTED, right=True)
         slots = len(windows) + bool(missing_models)
-        gap = 146 if slots <= 2 else 106
-        start = 115 if slots <= 2 else 93
+        start, gap = s.rows[slots > 2]
         for index, w in enumerate(windows):
-            self.window(w, x + 30, start + index * gap, 868, now, stale)
+            self.window(w, x + s.pad, start + index * gap, inner, now, stale, s)
         if missing_models:
             y = start + len(windows) * gap
-            self.text("MODEL WEEKLY LIMITS", x + 30, y + 5, 20, MUTED, True)
-            self.text("Unavailable until account data returns", x + 30, y + 50, 20, MUTED)
+            self.text("MODEL WEEKLY LIMITS", x + s.pad, y + s.label[0], s.label[1], MUTED, True)
+            self.text("Unavailable until account data returns", x + s.pad, y + s.bar[0],
+                      s.meta[1] + 2, MUTED, max_width=inner)
         age = max(0, int((now - snapshot.observed_at) // 60))
         text = f"{'STALE' if stale else 'PARTIAL' if snapshot.warning else 'UPDATED'}  {age}m ago  ·  {snapshot.source}"
         issue = reading.error or snapshot.warning
         if issue:
             text += "  ·  " + issue
-        self.text(text, x + 30, 407, 14, ORANGE if stale or issue else MUTED, max_width=868)
+        self.text(text, x + s.pad, 407, 14, ORANGE if stale or issue else MUTED, max_width=inner)
 
-    def render(self, readings, now, sample=False):
+    def render(self, accounts, readings, now, sample=False):
         self.surface.fill(BG)
-        self.panel("claude", readings.get("claude", Reading()), 20, now)
-        self.panel("codex", readings.get("codex", Reading()), 972, now)
+        for account, (x, width) in zip(accounts, PANELS[len(accounts)]):
+            self.panel(account, readings.get(account.id, Reading()), x, width, now)
         self.text("QUOTA STRIP", 30, 449, 16, MUTED, True)
         self.text("SAMPLE DATA" if sample else "Markers: weekly by midnight · 5-hour by elapsed time", 210, 449, 16, ORANGE if sample else MUTED)
         local = datetime.fromtimestamp(now, self.zone)
@@ -225,7 +281,13 @@ def main():
     parser.add_argument("--timezone", default=os.environ.get("QUOTA_TIMEZONE", "America/Sao_Paulo"))
     parser.add_argument("--interval", type=int, default=120)
     parser.add_argument("--at", help="ISO time for deterministic previews")
+    parser.add_argument("--accounts", help="Comma-separated accounts in screen order "
+                        f"(default: QUOTA_ACCOUNTS or claude,codex); known: {', '.join(ACCOUNTS)}")
     args = parser.parse_args()
+    try:
+        accounts = selected(args.accounts)
+    except ValueError as exc:
+        parser.error(str(exc))
     zone = ZoneInfo(args.timezone)
     if args.interval < 60:
         parser.error("Polling interval must be at least 60 seconds")
@@ -240,7 +302,7 @@ def main():
     if args.json:
         from quota_api import Provider, QuotaError
         result, failed = {}, False
-        for name in ("claude", "codex"):
+        for name in (a.id for a in accounts):
             try:
                 from quota_local import local_provider
                 provider = local_provider(name) if args.source == "local" else Provider(name)
@@ -267,9 +329,9 @@ def main():
         payload = json.loads(args.snapshot.read_text())
         saved = {name: Reading(Snapshot.from_dict(value)) for name, value in payload.items()}
     elif args.demo:
-        saved = demo(now)
+        saved = demo(now, accounts)
     elif not args.screenshot:
-        for name in ("claude", "codex"):
+        for name in (a.id for a in accounts):
             states[name] = State(name)
             threading.Thread(target=poll, args=(states[name], stop, args.interval, None, args.source), daemon=True).start()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
@@ -285,7 +347,7 @@ def main():
             readings = saved if saved is not None else {n: s.get() for n, s in states.items()}
             signature = (int(now // 15), tuple(readings.items()))
             if signature != last:
-                display.render(readings, now, args.demo)
+                display.render(accounts, readings, now, args.demo)
                 pygame.display.flip()
                 last = signature
             if args.screenshot:

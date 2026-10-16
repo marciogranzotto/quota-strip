@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from quota_accounts import ACCOUNTS
 from quota_model import (CLAUDE_RESET_UNKNOWN, claude_reset_bank, number, parse_claude,
                          parse_codex, parse_reset_bank)
 
@@ -113,17 +114,17 @@ def atomic_json(path, data):
 
 
 class CredentialStore:
-    def __init__(self, provider, home=None):
-        if provider not in PROVIDERS:
-            raise ValueError("Unknown provider")
-        self.provider = provider
+    def __init__(self, account, home=None):
+        if account not in ACCOUNTS:
+            raise ValueError("Unknown account")
+        self.account = account
         self.home = Path(home) if home else data_home()
-        self.path = self.home / f"{provider}-auth.json"
+        self.path = self.home / f"{account}-auth.json"
 
     @contextmanager
     def locked(self):
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(self.home / f"{self.provider}.lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fd = os.open(self.home / f"{self.account}.lock", os.O_CREAT | os.O_RDWR, 0o600)
         with os.fdopen(fd, "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
@@ -135,7 +136,7 @@ class CredentialStore:
                 raise ValueError()
             return data
         except (OSError, ValueError):
-            raise QuotaError(f"Sign in: python3 quota_auth.py {self.provider}") from None
+            raise QuotaError(f"Sign in: python3 quota_auth.py {self.account}") from None
 
     def save(self, data):
         atomic_json(self.path, data)
@@ -211,9 +212,12 @@ class ClaudeResetGrants:
 
 
 class Provider:
-    def __init__(self, name, home=None, request=request_json):
-        self.name, self.store, self.request = name, CredentialStore(name, home), request
-        self.reset_grants = ClaudeResetGrants() if name == "claude" else None
+    """One account's standalone collector; the account's provider picks the endpoints."""
+
+    def __init__(self, account, home=None, request=request_json):
+        self.store, self.request = CredentialStore(account, home), request
+        self.name = ACCOUNTS[account].provider
+        self.reset_grants = ClaudeResetGrants() if self.name == "claude" else None
         self.reset_retry_at = 0
         self.reset_backoff = 120
         self.reset_warning = None

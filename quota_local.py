@@ -10,8 +10,17 @@ import subprocess
 import threading
 import time
 
+from quota_accounts import ACCOUNTS
 from quota_api import ClaudeResetGrants, QuotaError, request_json
-from quota_model import parse_claude, parse_codex
+from quota_model import parse_claude, parse_codex, parse_cswap
+
+
+def local_config(key):
+    """A CLI path that setup-mac.sh recorded, for launches without a shell PATH."""
+    try:
+        return json.loads(Path(__file__).with_name(".local-config.json").read_text()).get(key)
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 class LocalClaude:
@@ -86,12 +95,9 @@ class LocalCodex:
         if not binary:
             # setup-mac.sh records the selected CLI, avoiding assumptions about
             # Finder/Terminal inheriting an interactive shell's Node PATH.
-            try:
-                config = json.loads(Path(__file__).with_name(".local-config.json").read_text())
-                binary = config["codex_bin"]
+            binary = local_config("codex_bin")
+            if binary:
                 env["PATH"] = str(Path(binary).parent) + os.pathsep + env.get("PATH", "")
-            except (OSError, ValueError, KeyError):
-                pass
         if not binary:
             raise QuotaError("Codex CLI not found")
         process = subprocess.Popen([binary, "app-server"], stdin=subprocess.PIPE,
@@ -153,5 +159,92 @@ class LocalCodex:
             process.stdout.close()
 
 
-def local_provider(name):
-    return LocalClaude() if name == "claude" else LocalCodex()
+def cswap_binary():
+    return os.environ.get("QUOTA_CSWAP_BIN") or shutil.which("cswap") or local_config("cswap_bin")
+
+
+class CswapAccounts:
+    """Shared `cswap list --json` reads for every Claude account on this Mac.
+
+    cswap swaps which account Claude Code's own login belongs to, so the
+    active login cannot identify an account. cswap also polls each account's
+    usage on its own schedule and serves `list` from that store, so reading
+    it adds no usage requests against the per-token rate limit.
+    """
+    ttl = 30
+
+    def __init__(self, binary, run=subprocess.run, monotonic=time.monotonic):
+        self.binary, self.run, self.monotonic = binary, run, monotonic
+        self.lock = threading.Lock()
+        self.rows, self.read_at = None, None
+
+    def accounts(self):
+        with self.lock:
+            if self.read_at is None or self.monotonic() - self.read_at >= self.ttl:
+                self.rows = self.read()
+                self.read_at = self.monotonic()
+            return self.rows
+
+    def read(self):
+        try:
+            result = self.run([self.binary, "list", "--json"], capture_output=True,
+                              text=True, timeout=60, stdin=subprocess.DEVNULL)
+            data = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            raise QuotaError("cswap unavailable") from None
+        if not isinstance(data, dict) or data.get("schemaVersion") != 1:
+            raise QuotaError("cswap output changed; update collector")
+        if result.returncode or "error" in data or not isinstance(data.get("accounts"), list):
+            # The error envelope may name accounts; show only that it failed.
+            raise QuotaError("cswap list failed")
+        return data["accounts"]
+
+
+class CswapClaude:
+    """One Claude account from cswap, matched by its cswap alias."""
+
+    def __init__(self, account, accounts):
+        self.account, self.accounts = account, accounts
+
+    def fetch(self):
+        rows = [row for row in self.accounts.accounts()
+                if isinstance(row, dict) and row.get("alias") == self.account]
+        if len(rows) != 1:
+            raise QuotaError(f"Run: cswap alias <number> {self.account}" if not rows
+                             else f"Two cswap accounts use alias {self.account}")
+        try:
+            snapshot = parse_cswap(rows[0], time.time())
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise QuotaError("Quota response changed; update collector") from None
+        if snapshot is None:
+            note = rows[0].get("usageStatusText")
+            raise QuotaError(note if isinstance(note, str) and note else "cswap usage unavailable")
+        return snapshot
+
+
+class Unavailable:
+    def __init__(self, message):
+        self.message = message
+
+    def fetch(self):
+        raise QuotaError(self.message)
+
+
+_cswap = None
+_cswap_lock = threading.Lock()
+
+
+def local_provider(account):
+    global _cswap
+    if ACCOUNTS[account].provider == "codex":
+        return LocalCodex()
+    binary = cswap_binary()
+    if binary:
+        with _cswap_lock:
+            if _cswap is None:
+                _cswap = CswapAccounts(binary)
+        return CswapClaude(account, _cswap)
+    if account == "claude":
+        return LocalClaude()
+    # Claude Code's own login holds one account; others need cswap's store.
+    return Unavailable(f"Install cswap to read {account} locally")

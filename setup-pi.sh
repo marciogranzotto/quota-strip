@@ -37,7 +37,7 @@ if [[ -S /run/user/$quota_uid/bus && -f /etc/systemd/user/quota-strip.service ]]
 fi
 install -d -m 0755 /opt/quota-strip /opt/quota-strip/assets
 # Explicit allowlist: never copy a checkout's credentials, logs, or snapshots.
-install -m 0644 quota_api.py quota_auth.py quota_callback.py quota_model.py \
+install -m 0644 quota_accounts.py quota_api.py quota_auth.py quota_callback.py quota_model.py \
     quota_state.py quota_local.py quota_display.py LICENSE /opt/quota-strip/
 install -m 0644 assets/*.png /opt/quota-strip/assets/
 install -m 0644 assets/README.md assets/LICENSE* /opt/quota-strip/assets/

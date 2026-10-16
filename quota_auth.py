@@ -14,6 +14,7 @@ import json
 import secrets
 import time
 from urllib.parse import urlencode
+from quota_accounts import ACCOUNTS
 from quota_callback import LoopbackCallback
 from quota_api import (CLAUDE_CLIENT, CODEX_CLIENT, CredentialStore, PROVIDERS,
                        QuotaError, request_json, token_record)
@@ -102,13 +103,14 @@ def codex_login(request=request_json, sleep=time.sleep, monotonic=time.monotonic
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("provider", choices=["claude", "codex"])
+    parser.add_argument("account", choices=list(ACCOUNTS))
     parser.add_argument("--browser", action="store_true", help="Use a local browser callback for Claude sign-in")
     args = parser.parse_args()
-    store = CredentialStore(args.provider)
+    store = CredentialStore(args.account)
+    provider = ACCOUNTS[args.account].provider
     try:
         with store.locked():
-            record = claude_login(browser=args.browser) if args.provider == "claude" else codex_login()
+            record = claude_login(browser=args.browser) if provider == "claude" else codex_login()
             if not record.get("refresh_token"):
                 raise QuotaError("No refresh token returned; unattended sign-in is unavailable")
             store.save(record)

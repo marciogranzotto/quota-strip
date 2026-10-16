@@ -4,6 +4,7 @@ import hashlib
 import json
 from zoneinfo import ZoneInfo
 
+from quota_accounts import ACCOUNTS
 from quota_model import Snapshot, WEEK, FIVE_HOURS
 
 
@@ -15,10 +16,14 @@ def fresh(observed, now):
     return now - 600 <= observed <= now + 60
 
 
-def sensor_groups(snapshot, now, zone):
-    """Return only normalized, non-secret quota values and stable entity keys."""
+def sensor_groups(snapshot, now, zone, account=None):
+    """Return only normalized, non-secret quota values and stable entity keys.
+
+    Keys and names start with the account id; for the first account of each
+    provider that equals the provider name, so existing entity IDs persist.
+    """
     groups = {}
-    provider = snapshot.provider
+    provider = account or snapshot.provider
     for window in snapshot.windows:
         key = provider + '_' + hashlib.sha256(window.key.encode()).hexdigest()[:16]
         name = ' '.join(part for part in (provider.title(), window.bucket, window.label) if part)
@@ -90,13 +95,14 @@ class QuotaSensors:
         if not self.client.is_connected():
             return
         current = {}
-        for provider in ('claude', 'codex'):
+        # Every known account: the dashboard writes snapshots only for those it shows.
+        for account in ACCOUNTS.values():
             try:
                 snapshot = Snapshot.from_dict(json.loads(
-                    (self.home / f'{provider}-snapshot.json').read_text()))
-                if snapshot.provider != provider:
+                    (self.home / f'{account.id}-snapshot.json').read_text()))
+                if snapshot.provider != account.provider:
                     continue
-                current.update(sensor_groups(snapshot, now, self.zone))
+                current.update(sensor_groups(snapshot, now, self.zone, account.id))
             except (OSError, ValueError, TypeError, KeyError, OverflowError):
                 continue
         for key, (name, fields, values) in current.items():

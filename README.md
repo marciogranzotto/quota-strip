@@ -65,6 +65,24 @@ Open the printed links to finish sign-in. Claude's `--browser` option accepts it
 
 After standalone sign-in, double-click **Launch Quota Strip.command** to open the display. Existing CLI sessions remain available through `--source local`.
 
+## A second Claude account
+
+The strip can show a second Claude subscription, `claude2`, beside the first. Choose the accounts and their order with `--accounts` or `QUOTA_ACCOUNTS`:
+
+```sh
+.venv/bin/python quota_auth.py claude2 --browser   # sign in with the second account
+./run.sh --source standalone --accounts claude,claude2,codex --windowed
+```
+
+With three accounts, the strip shows three equal panels with smaller type. Each account has its own credentials, cached reading, and Home Assistant sensors. Accounts are defined in `quota_accounts.py`, which also holds each account's static header badge.
+
+In local mode, Claude Code's own sign-in holds only one account, so a second Claude account needs [cswap](https://github.com/danpoyar/cswap). When cswap is installed, local mode reads every Claude account from `cswap list --json` instead of Claude Code's login, matching each account by its cswap alias:
+
+```sh
+cswap alias 1 claude
+cswap alias 2 claude2
+```
+
 For Raspberry Pi OS Lite 64-bit, follow the [Pi setup guide](docs/RASPBERRY_PI.md). It covers imaging, SSH, dedicated sign-in, automatic startup, portrait-panel rotation, updates, and the [hardware validation record](docs/RASPBERRY_PI.md#hardware-validation-record-2026-09-05).
 
 ## Home Assistant
@@ -133,17 +151,21 @@ Claude reports grants only through an optional query on the same usage endpoint,
 | --- | --- |
 | `--timezone` / `QUOTA_TIMEZONE` | IANA timezone for midnight and the clock; currently defaults to `America/Sao_Paulo`. |
 | `--interval` | Seconds between successful reads; default `120`. |
+| `--accounts` / `QUOTA_ACCOUNTS` | Comma-separated accounts in screen order, up to three; default `claude,codex`. |
 | `QUOTA_HOME` | Runtime data directory; default `~/.config/quota-strip`. |
 | `QUOTA_CODEX_BIN` | Path to the Codex executable. Setup also records the detected path in the ignored `.local-config.json`. |
+| `QUOTA_CSWAP_BIN` | Path to cswap for local mode. Setup also records it in `.local-config.json` when cswap is on `PATH`. |
 | `QUOTA_PYTHON` | Python interpreter to use when running `setup-mac.sh`. |
 
-The current header badges read `MAX 20×` and `CHATGPT PRO`; they are presentation labels, not detected subscription metadata. Quota values always come from the account response.
+The header badges read `MAX 20×`, `MAX 5×` (`claude2`) and `CHATGPT PRO`; they are presentation labels, not detected subscription metadata. Quota values always come from the account response.
 
 The layout keeps two windows visible and rotates additional windows through the third slot when a provider reports more than three. The window is fixed at 1920 × 480.
 
 ## Data sources and privacy
 
 **In local mode, Claude** reads the existing Claude Code credentials file or macOS Keychain entry and requests account usage. It does not modify or refresh those credentials. If they expire, renew the login through Claude Code. An optional fallback reads `~/.claude/.debug/statusline-input.json` if an existing status-line setup already produces it; Quota Strip does not create or enable that capture. The status line only reports the main windows. During an account failure, those windows keep updating while previously observed model quotas such as Fable remain visible with their original timestamps and a **Last known** label. The footer reports **PARTIAL** and the account error. With no previous model reading, the display shows model limits as unavailable. Account requests back off independently of local status-line reads.
+
+**In local mode with cswap installed, Claude** accounts are read from `cswap list --json`, matched by cswap alias. cswap switches which account Claude Code's login belongs to, so that login cannot identify an account. Quota Strip makes no Claude requests in this mode: cswap polls each account on its own schedule, and `list` serves its stored readings. When cswap has no current reading, its last good reading is shown as stale with cswap's reason. cswap does not report limit-reset grants, so the Claude header shows **Count unavailable** in this mode.
 
 **In local mode, Codex** launches the installed CLI's app-server, requests `account/rateLimits/read`, and stops that child process after the read. No coding task is started. The CLI manages its own account session.
 
@@ -165,8 +187,9 @@ The dashboard's only runtime dependency outside the Python standard library is *
 
 | File | Responsibility |
 | --- | --- |
+| `quota_accounts.py` | Accounts the strip can show, their providers and header badges. |
 | `quota_model.py` | Normalize provider windows and calculate weekly allowances. |
-| `quota_local.py` | Read existing local Claude and Codex sign-ins. |
+| `quota_local.py` | Read existing local Claude (or cswap) and Codex sign-ins. |
 | `quota_api.py`, `quota_auth.py`, `quota_callback.py` | Standalone account requests, sign-in, and browser callback. |
 | `quota_state.py` | Independent polling, backoff, caching, and stale readings. |
 | `quota_display.py` | Native rendering, demo mode, and command-line options. |
@@ -186,6 +209,7 @@ Tests cover provider parsing, model-specific quotas, midnight and DST boundaries
 - [x] Verify the physical HDMI panel at 1920 × 480, including persistent rotation.
 - [x] Verify app crash recovery without ending the graphical session, and clean session shutdown.
 - [x] Add Home Assistant MQTT discovery and verify live display power controls.
+- [ ] Show a second Claude account (`claude2`) on the physical strip.
 - [ ] Resolve undervoltage on the test Pi and verify cold-boot recovery with the Mac disconnected.
 - [ ] Validate physical network recovery and sustained unattended operation on the Pi.
 - [ ] Validate resource usage across quota resets and token renewal on the Pi.

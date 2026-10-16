@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 import json
 import threading
 import time
+from quota_accounts import ACCOUNTS
 from quota_api import Provider, QuotaError, atomic_json, data_home
 from quota_model import Snapshot
 
@@ -19,14 +20,14 @@ class Reading:
 
 
 class State:
-    def __init__(self, provider, home=None):
-        self.provider = provider
-        self.path = (home or data_home()) / f"{provider}-snapshot.json"
+    def __init__(self, account, home=None):
+        self.account = account
+        self.path = (home or data_home()) / f"{account}-snapshot.json"
         self.lock = threading.Lock()
         self.reading = Reading()
         try:
             snapshot = Snapshot.from_dict(json.loads(self.path.read_text()))
-            if snapshot.provider == provider:
+            if snapshot.provider == ACCOUNTS[account].provider:
                 self.reading = Reading(snapshot, "Cached - reconnecting")
         except (OSError, ValueError, TypeError, KeyError):
             pass
@@ -65,9 +66,9 @@ class State:
 def poll(state, stop, interval=120, home=None, source="standalone"):
     if source == "local":
         from quota_local import local_provider
-        provider = local_provider(state.provider)
+        provider = local_provider(state.account)
     else:
-        provider = Provider(state.provider, home)
+        provider = Provider(state.account, home)
     backoff = interval
     while not stop.is_set():
         try:

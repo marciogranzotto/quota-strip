@@ -78,7 +78,17 @@ python3 /opt/quota-strip/quota_auth.py codex
 
 Follow the browser links from your phone or computer. Claude's terminal flow asks for the returned `code#state` with hidden input; Codex uses a short device code. Credentials are stored with mode `0600` under the appliance user's `~/.config/quota-strip`. Never put them in Git or share the token files. Token renewal is automatic, but revoked access requires sign-in again.
 
-To move an existing Quota Strip installation between devices, transfer **only its dedicated** `claude-auth.json` and `codex-auth.json` privately over SSH, with both displays stopped. Do not copy Claude Code or Codex CLI credentials. Treat this as a move: do not run two collectors with the same rotating refresh token. Alternatively, sign in separately on the Pi and leave the Mac's session independent.
+To show a second Claude account, sign it in as `claude2` (log in with that account in the browser) and list it in `~/.config/quota-strip/display.env`:
+
+```sh
+python3 /opt/quota-strip/quota_auth.py claude2
+echo 'QUOTA_ACCOUNTS=claude,claude2,codex' >> ~/.config/quota-strip/display.env
+systemctl --user restart quota-strip.service
+```
+
+This is a separate sign-in from any made on the Mac (for example through cswap), so the two never share a rotating refresh token.
+
+To move an existing Quota Strip installation between devices, transfer **only its dedicated** `claude-auth.json`, `claude2-auth.json` (if used) and `codex-auth.json` privately over SSH, with both displays stopped. Do not copy Claude Code or Codex CLI credentials. Treat this as a move: do not run two collectors with the same rotating refresh token. Alternatively, sign in separately on the Pi and leave the Mac's session independent.
 
 ## 4. Start and inspect
 
