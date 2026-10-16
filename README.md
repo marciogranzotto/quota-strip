@@ -209,7 +209,7 @@ Tests cover provider parsing, model-specific quotas, midnight and DST boundaries
 - [x] Verify the physical HDMI panel at 1920 × 480, including persistent rotation.
 - [x] Verify app crash recovery without ending the graphical session, and clean session shutdown.
 - [x] Add Home Assistant MQTT discovery and verify live display power controls.
-- [ ] Show a second Claude account (`claude2`) on the physical strip.
+- [x] Show a second Claude account (`claude2`) on the Pi (verified 2026-10-16 from a capture of the Pi's X screen, not by viewing the panel).
 - [ ] Resolve undervoltage on the test Pi and verify cold-boot recovery with the Mac disconnected.
 - [ ] Validate physical network recovery and sustained unattended operation on the Pi.
 - [ ] Validate resource usage across quota resets and token renewal on the Pi.
