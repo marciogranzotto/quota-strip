@@ -60,6 +60,16 @@ The account responses no longer report a Spark limit: `wham/usage` returned `add
 
 The dashboard reads metadata only; it does not implement reset redemption. Ordinary usage remains available when optional bank metadata is missing or malformed.
 
+## Plan badges (2026-10-19)
+
+Read from executing code and live read-only requests on 2026-10-19, after the second Claude account moved from Max 5× to Max 20×:
+
+- Claude: `GET https://api.anthropic.com/api/oauth/profile` (bearer token with `user:profile`, `anthropic-beta: oauth-2025-04-20`) returns `account` and `organization` objects. The plan is `organization.organization_type` (`claude_max`, `claude_pro`, `claude_team`, `claude_enterprise`, the values Claude Code 2.1.303 maps to its subscription type) and, for Max, `organization.rate_limit_tier` (`default_claude_max_5x`, `default_claude_max_20x`). Right after the upgrade it reported `default_claude_max_20x`.
+- Claude Code caches that profile as `oauthAccount` in `~/.claude.json` (`organizationType`, `organizationRateLimitTier`, `organizationUuid`) and refreshes it. The Keychain credential's `rateLimitTier` is written at sign-in and still read `default_claude_max_5x` after the upgrade, so it is not used.
+- A profile request followed immediately by a usage request, and a usage request followed by a profile request, all returned HTTP 200 in one trial. The profile is not subject to the usage endpoint's back-to-back throttle, but the strip still reads it at most once a day.
+- cswap's `list --json` (schema v1) reports no plan; rows carry `organizationUuid`, which matches the cached profile's when that account's login is active.
+- Codex: the app-server's `RateLimitSnapshot` has `planType` (installed CLI 0.157.0 generated schema; values include `free`, `go`, `plus`, `pro`, `prolite`, `team`, `business`, `enterprise`, `edu`, `unknown`). A live read returned `pro`. The HTTP `wham/usage` response carries the same value as top-level `plan_type` ([backend client](https://github.com/openai/codex/blob/main/codex-rs/backend-client/src/client.rs), `RateLimitStatusPayload`). No extra request is needed.
+
 ## Partial Claude readings
 
 ### Additive weekly metadata (2026-09-15)

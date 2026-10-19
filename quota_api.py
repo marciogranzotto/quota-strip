@@ -6,6 +6,7 @@ are isolated here; credentials belong exclusively to this appliance.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from email.utils import parsedate_to_datetime
 import fcntl
 import json
@@ -17,8 +18,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from quota_accounts import ACCOUNTS
-from quota_model import (CLAUDE_RESET_UNKNOWN, claude_reset_bank, number, parse_claude,
-                         parse_codex, parse_reset_bank)
+from quota_model import (CLAUDE_RESET_UNKNOWN, claude_plan, claude_reset_bank, number,
+                         parse_claude, parse_codex, parse_reset_bank)
 
 CLAUDE_CLIENT = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CODEX_CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -32,6 +33,9 @@ PROVIDERS = {
 # version if the reset count starts reporting "cli_version".
 CLAUDE_RESET_URL = PROVIDERS["claude"][0] + "?cedar_ember=1&skip_spend=1"
 CLAUDE_CLI_AGENT = "claude-cli/2.1.282 (external, cli)"
+# The account's plan, read as Claude Code does. Not the usage endpoint, so it
+# does not count against that endpoint's back-to-back throttle.
+CLAUDE_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
 
 class QuotaError(Exception):
@@ -211,6 +215,40 @@ class ClaudeResetGrants:
         self.retry_at = self.monotonic() + max(self.backoff, retry_after)
 
 
+class ClaudeProfile:
+    """The Claude plan badge, from the OAuth profile at most once a day.
+
+    Plans change rarely, so the last reported plan is kept until a newer
+    profile replaces it. A failed read retries with backoff and never
+    affects quota collection. None means no profile has been read yet.
+    """
+    interval = 86400
+
+    def __init__(self, monotonic=time.monotonic):
+        self.monotonic = monotonic
+        self.plan = None
+        self.retry_at = 0
+        self.backoff = 600
+
+    def read(self, request, token):
+        if self.monotonic() < self.retry_at:
+            return self.plan
+        try:
+            data = request(CLAUDE_PROFILE_URL, headers={"Authorization": "Bearer " + token,
+                                                        "anthropic-beta": "oauth-2025-04-20"})
+            organization = data.get("organization")
+            if not isinstance(organization, dict):
+                raise QuotaError("Profile response changed")
+        except QuotaError as exc:
+            self.retry_at = self.monotonic() + max(self.backoff, exc.retry_after)
+            self.backoff = min(self.backoff * 2, self.interval)
+            return self.plan
+        self.plan = claude_plan(organization.get("organization_type"), organization.get("rate_limit_tier"))
+        self.retry_at = self.monotonic() + self.interval
+        self.backoff = 600
+        return self.plan
+
+
 class Provider:
     """One account's standalone collector; the account's provider picks the endpoints."""
 
@@ -218,6 +256,7 @@ class Provider:
         self.store, self.request = CredentialStore(account, home), request
         self.name = ACCOUNTS[account].provider
         self.reset_grants = ClaudeResetGrants() if self.name == "claude" else None
+        self.profile = ClaudeProfile() if self.name == "claude" else None
         self.reset_retry_at = 0
         self.reset_backoff = 120
         self.reset_warning = None
@@ -247,11 +286,14 @@ class Provider:
             except QuotaError as exc:
                 if exc.status != 401 or refreshed:
                     raise
-                data = self.get_usage(self.refresh(creds))
+                creds = self.refresh(creds)
+                data = self.get_usage(creds)
+            plan = self.profile.read(self.request, creds["access_token"]) if self.profile else None
         try:
-            return (parse_claude if self.name == "claude" else parse_codex)(data, time.time())
+            snapshot = (parse_claude if self.name == "claude" else parse_codex)(data, time.time())
         except (ValueError, TypeError, KeyError):
             raise QuotaError("Quota response changed; update collector") from None
+        return replace(snapshot, plan=plan) if self.profile else snapshot
 
     def get_usage(self, creds):
         if self.name == "claude":

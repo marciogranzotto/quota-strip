@@ -9,13 +9,12 @@ class Account:
     id: str        # Names credential, lock and snapshot files, and HA entity keys.
     provider: str  # "claude" or "codex": selects endpoints, parser and logo.
     title: str
-    badge: str     # Static plan label, not detected metadata.
 
 
 ACCOUNTS = {a.id: a for a in (
-    Account("claude", "claude", "CLAUDE", "MAX 20×"),
-    Account("claude2", "claude", "CLAUDE2", "MAX 20×"),
-    Account("codex", "codex", "CODEX", "CHATGPT PRO"),
+    Account("claude", "claude", "CLAUDE"),
+    Account("claude2", "claude", "CLAUDE2"),
+    Account("codex", "codex", "CODEX"),
 )}
 DEFAULT = "claude,codex"
 MAX_SHOWN = 3  # The 1920 × 480 layouts hold at most three panels.

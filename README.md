@@ -157,7 +157,7 @@ Claude reports grants only through an optional query on the same usage endpoint,
 | `QUOTA_CSWAP_BIN` | Path to cswap for local mode. Setup also records it in `.local-config.json` when cswap is on `PATH`. |
 | `QUOTA_PYTHON` | Python interpreter to use when running `setup-mac.sh`. |
 
-The header badges read `MAX 20×` (both Claude accounts) and `CHATGPT PRO`; they are presentation labels, not detected subscription metadata. Quota values always come from the account response.
+The header badge shows the plan each provider reports for the account, such as `MAX 20×` or `CHATGPT PRO`. Claude's comes from its OAuth profile, read at most once a day in standalone mode; in local mode it comes from Claude Code's cached copy of that profile in `~/.claude.json`, which with cswap only describes the account whose login is active, so another account keeps the badge from its last snapshot. Codex reports its plan in the quota response itself. An unknown or unrecognized plan shows no badge. Quota values always come from the account response.
 
 The layout keeps two windows visible and rotates additional windows through the third slot when a provider reports more than three. The window is fixed at 1920 × 480.
 

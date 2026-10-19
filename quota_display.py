@@ -13,7 +13,7 @@ import time
 from zoneinfo import ZoneInfo
 
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from quota_accounts import ACCOUNTS, selected
 from quota_model import Snapshot, Window, WEEK, FIVE_HOURS, countdown, rounded
 from quota_state import Reading, State, poll
@@ -78,7 +78,7 @@ def demo(now, accounts):
                     "scope": {"model": {"display_name": "Fable"}}}],
     }, now)
     codex = parse_codex({"rateLimitsByLimitId": {
-        "codex": {"primary": {"usedPercent": 54, "windowDurationMins": 10080, "resetsAt": now + 2*86400}},
+        "codex": {"planType": "pro", "primary": {"usedPercent": 54, "windowDurationMins": 10080, "resetsAt": now + 2*86400}},
     }, "rateLimitResetCredits": {"availableCount": 2, "credits": [
         {"status": "available", "expiresAt": now + 3*86400},
         {"status": "available", "expiresAt": now + 12*86400},
@@ -91,7 +91,8 @@ def demo(now, accounts):
                     "resets_at": now + 4*86400 + 2*3600 + 40*60,
                     "scope": {"model": {"display_name": "Fable"}}}],
     }, now)
-    samples = {"claude": claude, "claude2": claude2, "codex": codex}
+    samples = {"claude": replace(claude, plan="MAX 20×"), "claude2": replace(claude2, plan="MAX 5×"),
+               "codex": codex}
     return {a.id: Reading(samples[a.id]) for a in accounts}
 
 
@@ -220,8 +221,9 @@ class Display:
         self.pg.draw.rect(self.surface, PANEL, (x, 20, width, 414), border_radius=14)
         self.surface.blit(self.logo(account.provider, s.logo), (x + s.pad - 4, 34 - (s.logo - 44) // 2))
         self.text(account.title, x + s.title[0], s.title[1], s.title[2], FG, True)
-        self.text(account.badge, x + width - s.badge[0], s.badge[1], s.badge[2], MUTED, right=True)
         snapshot = reading.snapshot
+        if snapshot is not None and snapshot.plan:
+            self.text(snapshot.plan, x + width - s.badge[0], s.badge[1], s.badge[2], MUTED, right=True)
         stale = reading.stale(now, self.stale_after)
         bank_x = x + s.bank[0]
         self.reset_bank(snapshot.reset_bank if snapshot else None, bank_x, s.bank[1],

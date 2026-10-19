@@ -142,7 +142,7 @@ class StandaloneTests(unittest.TestCase):
         with patch('quota_state.Provider', return_value=provider):
             poll(state, Stop(), 120, self.home, 'standalone')
         self.assertEqual(waits, [240, 120])
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)  # Usage (failed), token, usage, profile.
         self.assertIsNone(state.get().error)
         self.assertEqual(state.get().snapshot.windows[0].used, 10)
         self.assertEqual(provider.store.read()['refresh_token'], 'rotated-refresh')

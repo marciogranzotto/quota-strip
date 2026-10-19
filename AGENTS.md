@@ -53,7 +53,7 @@ Data flows **provider → `Snapshot` → `State` → display / HA sensors**:
 - Never log, print or display tokens or raw provider response bodies. Snapshots store only normalized values. Reset-credit IDs and descriptions are discarded.
 - Local mode must not modify the CLI tools' credentials. Standalone mode must never touch the CLI stores.
 - The consumer usage endpoints are unofficial. Parse defensively. A parser failure becomes `QuotaError("Quota response changed; update collector")`.
-- The `MAX 20×` and `CHATGPT PRO` header badges are static labels in `quota_accounts.py`, not detected metadata.
+- Header badges show the provider-reported plan (`Snapshot.plan`); never hard-code or guess one. `None` means the reading did not include the plan, so `State` keeps the previous one; `""` means the provider reported a plan without a badge. Claude's plan comes from `GET /api/oauth/profile` (`organization.organization_type` and `rate_limit_tier`) at most daily, or locally from `oauthAccount` in `~/.claude.json`. Never use the Keychain's `rateLimitTier`: it is saved at sign-in and goes stale. Codex's plan rides on the quota response (`plan_type` / `planType`).
 
 ## Product decisions from this project
 

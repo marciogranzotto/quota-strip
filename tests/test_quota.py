@@ -9,11 +9,11 @@ import unittest
 from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
-from quota_api import (CLAUDE_RESET_URL, PROVIDERS, CredentialStore, NoRedirect, Provider,
-                       QuotaError, atomic_json, retry_seconds, token_record)
+from quota_api import (CLAUDE_PROFILE_URL, CLAUDE_RESET_URL, PROVIDERS, ClaudeProfile, CredentialStore,
+                       NoRedirect, Provider, QuotaError, atomic_json, retry_seconds, token_record)
 from quota_auth import account_id_from_token, claude_login, codex_login, pkce_challenge
-from quota_model import (ResetBank, Snapshot, Window, WEEK, FIVE_HOURS, claude_reset_bank,
-                         countdown, parse_claude, parse_codex, parse_reset_bank)
+from quota_model import (ResetBank, Snapshot, Window, WEEK, FIVE_HOURS, claude_plan, claude_reset_bank,
+                         codex_plan, countdown, parse_claude, parse_codex, parse_reset_bank)
 from quota_state import Reading, State
 
 
@@ -316,6 +316,8 @@ class ClaudeResetGrantTests(unittest.TestCase):
         clock = [0]
         calls = []
         def request(url, **kw):
+            if url == CLAUDE_PROFILE_URL:  # Another endpoint; calls lists usage reads.
+                return {"organization": {}}
             calls.append(url)
             if url == CLAUDE_RESET_URL:
                 self.assertTrue(kw["headers"]["User-Agent"].startswith("claude-cli/"))
@@ -351,6 +353,8 @@ class ClaudeResetGrantTests(unittest.TestCase):
                       "cedar_ember": claude_grants(eligible=False, reason="no_grant")}]
         calls = []
         def request(url, **kw):
+            if url == CLAUDE_PROFILE_URL:
+                return {"organization": {}}
             calls.append(url)
             if url != CLAUDE_RESET_URL:
                 return {"five_hour": {"utilization": 7}, "cedar_ember": None}
@@ -389,6 +393,104 @@ class ClaudeResetGrantTests(unittest.TestCase):
         self.assertIsNone(provider.reset_grants.warning)
 
 
+class PlanTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+
+    def test_claude_plan_names_max_multiplier_from_rate_limit_tier(self):
+        self.assertEqual(claude_plan("claude_max", "default_claude_max_20x"), "MAX 20×")
+        self.assertEqual(claude_plan("claude_max", "default_claude_max_5x"), "MAX 5×")
+        self.assertEqual(claude_plan("claude_max", None), "MAX")
+        self.assertEqual(claude_plan("claude_pro", "default_claude_ai"), "PRO")
+        self.assertEqual(claude_plan("claude_team", None), "TEAM")
+        # Reported plans without a badge are "", not a guess.
+        self.assertEqual(claude_plan("claude_pro", "default_claude_max_20x"), "PRO")
+        self.assertEqual(claude_plan("claude_free", None), "")
+        self.assertEqual(claude_plan(None, "default_claude_max_20x"), "")
+
+    def test_codex_plan_distinguishes_unreported_from_unlabelled(self):
+        self.assertEqual(codex_plan("pro"), "CHATGPT PRO")
+        self.assertEqual(codex_plan("plus"), "CHATGPT PLUS")
+        self.assertEqual(codex_plan("unknown"), "")
+        self.assertEqual(codex_plan(7), "")
+        self.assertIsNone(codex_plan(None))
+
+    def test_codex_plan_comes_from_the_quota_response(self):
+        http = parse_codex({"plan_type": "pro", "rate_limit": {}}, 1)
+        server = parse_codex({"rateLimitsByLimitId": {"codex": {"planType": "plus"}}}, 1)
+        single = parse_codex({"rateLimits": {"planType": "pro"}}, 1)
+        absent = parse_codex({"rate_limit": {}}, 1)
+        self.assertEqual([http.plan, server.plan, single.plan, absent.plan],
+                         ["CHATGPT PRO", "CHATGPT PLUS", "CHATGPT PRO", None])
+
+    def test_snapshot_round_trip_keeps_plan(self):
+        for plan in ("MAX 20×", "", None):
+            with self.subTest(plan=plan):
+                snap = replace(parse_claude({"five_hour": {"utilization": 3}}, 10), plan=plan)
+                self.assertEqual(Snapshot.from_dict(json.loads(json.dumps(snap.to_dict()))), snap)
+        legacy = parse_claude({"five_hour": {"utilization": 3}}, 10).to_dict()
+        del legacy["plan"]  # Snapshots saved before plans were read.
+        self.assertIsNone(Snapshot.from_dict(legacy).plan)
+
+    def test_profile_is_read_once_a_day_and_kept_through_failures(self):
+        clock = [0]
+        responses = [{"organization": {"organization_type": "claude_max",
+                                       "rate_limit_tier": "default_claude_max_5x"}},
+                     QuotaError("Provider request failed (HTTP 500)", 500),
+                     {"organization": {"organization_type": "claude_max",
+                                       "rate_limit_tier": "default_claude_max_20x"}}]
+        calls = []
+        def request(url, **kw):
+            calls.append((url, kw["headers"]["Authorization"]))
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        profile = ClaudeProfile(monotonic=lambda: clock[0])
+        self.assertEqual(profile.read(request, "t"), "MAX 5×")
+        self.assertEqual(calls, [(CLAUDE_PROFILE_URL, "Bearer t")])
+        clock[0] = 86399
+        self.assertEqual(profile.read(request, "t"), "MAX 5×")
+        self.assertEqual(len(calls), 1)
+        clock[0] = 86400
+        self.assertEqual(profile.read(request, "t"), "MAX 5×")  # Failed; last plan kept.
+        clock[0] = 86400 + 599
+        profile.read(request, "t")
+        self.assertEqual(len(calls), 2)
+        clock[0] = 86400 + 600
+        self.assertEqual(profile.read(request, "t"), "MAX 20×")
+
+    def test_profile_failure_never_blocks_quota(self):
+        def request(url, **kw):
+            if url == CLAUDE_PROFILE_URL:
+                raise QuotaError("Access denied (HTTP 403)", 403)
+            return {"five_hour": {"utilization": 7}}
+        provider = Provider("claude", self.home, request)
+        provider.store.save({"access_token": "test-only"})
+        snap = provider.fetch()
+        self.assertEqual(snap.windows[0].used, 7)
+        self.assertIsNone(snap.plan)
+        self.assertNotIn("403", snap.warning or "")  # Only the missing badge shows it.
+
+    def test_unchanged_profile_shape_is_not_a_plan(self):
+        profile = ClaudeProfile()
+        self.assertIsNone(profile.read(lambda *a, **kw: {"organization": "x"}, "t"))
+        self.assertGreater(profile.retry_at, 0)
+
+    def test_state_keeps_plan_when_a_reading_omits_it(self):
+        state = State("claude2", self.home)
+        state.success(replace(parse_claude({"five_hour": {"utilization": 1}}, 10), plan="MAX 20×"))
+        state.success(parse_claude({"five_hour": {"utilization": 2}}, 20))
+        self.assertEqual(state.get().snapshot.plan, "MAX 20×")
+        state.partial(parse_claude({"five_hour": {"utilization": 3}}, 30))
+        self.assertEqual(state.get().snapshot.plan, "MAX 20×")
+        state.success(replace(parse_claude({"five_hour": {"utilization": 4}}, 40), plan=""))
+        self.assertEqual(state.get().snapshot.plan, "")  # A reported plan without a badge replaces it.
+        self.assertEqual(State("claude2", self.home).get().snapshot.plan, "")
+
+
 class StorageAndAuthTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -424,7 +526,8 @@ class StorageAndAuthTests(unittest.TestCase):
         provider.store.save({"access_token": "old", "refresh_token": "old-refresh", "expires_at": 1})
         self.assertEqual(provider.fetch().windows[0].used, 7)
         self.assertEqual(provider.store.read()["refresh_token"], "new-refresh")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)  # Token, usage, then profile with the new token.
+        self.assertEqual(calls[2][0], CLAUDE_PROFILE_URL)
 
     def test_403_does_not_refresh(self):
         def request(url, **kw):

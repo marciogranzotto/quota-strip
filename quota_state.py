@@ -37,6 +37,10 @@ class State:
             return self.reading
 
     def success(self, snapshot):
+        previous = self.get().snapshot
+        if snapshot.plan is None and previous is not None:
+            # Some readings omit the plan; it changes far less often than quotas.
+            snapshot = replace(snapshot, plan=previous.plan)
         try:
             atomic_json(self.path, snapshot.to_dict())
             error = None

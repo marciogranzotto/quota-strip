@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, time as day_time, timedelta, timezone
 import math
+import re
 from zoneinfo import ZoneInfo
 
 WEEK = 604800
@@ -23,6 +24,17 @@ CLAUDE_RESET_UNKNOWN = frozenset({"surface", "cli_version", "mobile", "unavailab
 # Quota windows a Claude grant can clear, normalized to the meters shown here.
 CLAUDE_RESET_CLEARS = {"five_hour": "five_hour", "seven_day": "seven_day",
                        "seven_day_overage_included": "seven_day"}
+# Header badges: the plan each provider reports for the signed-in account.
+# Claude's profile names the Max multiplier only in rate_limit_tier
+# (default_claude_max_5x, default_claude_max_20x).
+CLAUDE_MAX_TIER = re.compile(r"_max_([1-9][0-9]*)x$")
+CLAUDE_PLANS = {"claude_pro": "PRO", "claude_max": "MAX", "claude_team": "TEAM",
+                "claude_enterprise": "ENTERPRISE"}
+# Codex PlanType values (app-server planType, HTTP plan_type) shown as badges.
+CODEX_PLANS = {"free": "CHATGPT FREE", "go": "CHATGPT GO", "plus": "CHATGPT PLUS",
+               "pro": "CHATGPT PRO", "prolite": "CHATGPT PRO LITE", "team": "CHATGPT TEAM",
+               "business": "CHATGPT BUSINESS", "enterprise": "CHATGPT ENTERPRISE",
+               "edu": "CHATGPT EDU"}
 
 
 def number(value):
@@ -105,6 +117,21 @@ class ResetBank:
         clears = data.get("clears")
         clears = tuple(c for c in clears if c in ("five_hour", "seven_day")) if isinstance(clears, (list, tuple)) else ()
         return cls(count, expiry, data.get("details_complete") is True, clears)
+
+
+def claude_plan(organization_type, rate_limit_tier):
+    """Badge for a Claude profile's organization; "" for a plan without one."""
+    tier = CLAUDE_MAX_TIER.search(rate_limit_tier) if isinstance(rate_limit_tier, str) else None
+    if organization_type == "claude_max" and tier:
+        return f"MAX {int(tier.group(1))}×"
+    return CLAUDE_PLANS.get(organization_type, "") if isinstance(organization_type, str) else ""
+
+
+def codex_plan(plan_type):
+    """Badge for a reported Codex plan; "" without one, None when not reported."""
+    if plan_type is None:
+        return None
+    return CODEX_PLANS.get(plan_type, "") if isinstance(plan_type, str) else ""
 
 
 def parse_reset_bank(data):
@@ -192,6 +219,9 @@ class Snapshot:
     source: str = "account"
     reset_bank: ResetBank | None = None
     warning: str | None = None
+    # Plan badge the provider reported: "" when the plan has no badge, None
+    # when this reading did not include the plan.
+    plan: str | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -214,7 +244,8 @@ class Snapshot:
                                   w.get("stale") is True))
         return cls(data["provider"], tuple(windows), observed, str(data.get("source", "account")),
                    ResetBank.from_dict(data.get("reset_bank")),
-                   data.get("warning") if isinstance(data.get("warning"), str) else None)
+                   data.get("warning") if isinstance(data.get("warning"), str) else None,
+                   data.get("plan") if isinstance(data.get("plan"), str) else None)
 
 
 def duration_label(seconds):
@@ -342,6 +373,11 @@ def parse_codex(data, now):
                 buckets.append((str(key), item["rate_limit"]))
     else:
         raise ValueError("Codex response has no recognized quota fields")
+    # The HTTP response names the plan at the top; app-server snapshots carry
+    # it in each bucket.
+    plan = codex_plan(data.get("plan_type"))
+    for _, limits in buckets:
+        plan = plan if plan is not None else codex_plan(limits.get("planType"))
     for bucket, limits in buckets:
         name = limits.get("limitName") or bucket
         if bucket == "codex":
@@ -366,7 +402,7 @@ def parse_codex(data, now):
                                   reset, seconds, str(name)))
     return Snapshot("codex", tuple(windows), now,
                     reset_bank=parse_reset_bank(data.get("rateLimitResetCredits", data.get("rate_limit_reset_credits"))),
-                    warning=data.get("_quota_strip_warning"))
+                    warning=data.get("_quota_strip_warning"), plan=plan)
 
 
 def countdown(reset, now):

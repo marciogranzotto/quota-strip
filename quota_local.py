@@ -12,7 +12,7 @@ import time
 
 from quota_accounts import ACCOUNTS
 from quota_api import ClaudeResetGrants, QuotaError, request_json
-from quota_model import parse_claude, parse_codex, parse_cswap
+from quota_model import claude_plan, parse_claude, parse_codex, parse_cswap
 
 
 def local_config(key):
@@ -23,10 +23,41 @@ def local_config(key):
         return None
 
 
+class ClaudeCodeProfile:
+    """The plan in Claude Code's cached profile (oauthAccount in ~/.claude.json).
+
+    Claude Code refreshes this copy from the OAuth profile, so reading it adds
+    no requests. The Keychain's rateLimitTier is saved at sign-in and stays
+    stale after a plan change, so it is not used. The file is large, so it is
+    parsed again only when it changes.
+    """
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.mtime, self.account = None, None
+
+    def plan(self, organization=None):
+        """The badge; None when unreadable or (with organization) another login is active."""
+        path = Path.home() / ".claude.json"
+        with self.lock:
+            try:
+                mtime = path.stat().st_mtime_ns
+                if mtime != self.mtime:
+                    account = json.loads(path.read_text()).get("oauthAccount")
+                    self.mtime, self.account = mtime, account if isinstance(account, dict) else None
+            except (OSError, ValueError, AttributeError):
+                self.mtime, self.account = None, None
+            account = self.account
+        if account is None or (organization is not None and account.get("organizationUuid") != organization):
+            return None
+        return claude_plan(account.get("organizationType"), account.get("organizationRateLimitTier"))
+
+
 class LocalClaude:
-    def __init__(self, monotonic=time.monotonic):
+    def __init__(self, monotonic=time.monotonic, profile=None):
         self.monotonic = monotonic
         self.reset_grants = ClaudeResetGrants(monotonic=monotonic)
+        self.profile = profile or ClaudeCodeProfile()
         self.next_attempt = 0
         self.backoff = 120
         self.last_error = None
@@ -83,7 +114,8 @@ class LocalClaude:
             expiry = creds.get("expiresAt")
             if isinstance(expiry, (int, float)) and expiry <= (time.time() + 60) * 1000:
                 raise QuotaError("Claude sign-in expired; open Claude Code")
-            return parse_claude(self.reset_grants.read(request_json, token), time.time())
+            snapshot = parse_claude(self.reset_grants.read(request_json, token), time.time())
+            return replace(snapshot, plan=self.profile.plan())
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
             raise QuotaError("Claude local sign-in unavailable") from None
 
@@ -201,10 +233,16 @@ class CswapAccounts:
 
 
 class CswapClaude:
-    """One Claude account from cswap, matched by its cswap alias."""
+    """One Claude account from cswap, matched by its cswap alias.
 
-    def __init__(self, account, accounts):
+    cswap reports no plan. Its badge comes from Claude Code's profile while
+    that login belongs to this account's organization, and is otherwise
+    carried over from the account's last snapshot.
+    """
+
+    def __init__(self, account, accounts, profile=None):
         self.account, self.accounts = account, accounts
+        self.profile = profile or ClaudeCodeProfile()
 
     def fetch(self):
         rows = [row for row in self.accounts.accounts()
@@ -219,7 +257,8 @@ class CswapClaude:
         if snapshot is None:
             note = rows[0].get("usageStatusText")
             raise QuotaError(note if isinstance(note, str) and note else "cswap usage unavailable")
-        return snapshot
+        organization = rows[0].get("organizationUuid")
+        return replace(snapshot, plan=self.profile.plan(organization) if isinstance(organization, str) else None)
 
 
 class Unavailable:
@@ -232,6 +271,7 @@ class Unavailable:
 
 _cswap = None
 _cswap_lock = threading.Lock()
+_profile = ClaudeCodeProfile()
 
 
 def local_provider(account):
@@ -243,8 +283,8 @@ def local_provider(account):
         with _cswap_lock:
             if _cswap is None:
                 _cswap = CswapAccounts(binary)
-        return CswapClaude(account, _cswap)
+        return CswapClaude(account, _cswap, _profile)
     if account == "claude":
-        return LocalClaude()
+        return LocalClaude(profile=_profile)
     # Claude Code's own login holds one account; others need cswap's store.
     return Unavailable(f"Install cswap to read {account} locally")

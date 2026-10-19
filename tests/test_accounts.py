@@ -11,7 +11,7 @@ from quota_accounts import ACCOUNTS, selected
 from quota_api import PROVIDERS, CredentialStore, Provider, QuotaError
 from quota_ha_sensors import QuotaSensors, sensor_groups
 import quota_local
-from quota_local import CswapAccounts, CswapClaude, Unavailable, local_provider
+from quota_local import ClaudeCodeProfile, CswapAccounts, CswapClaude, Unavailable, local_provider
 from quota_model import WEEK, FIVE_HOURS, parse_claude, parse_cswap
 from quota_state import State
 
@@ -50,7 +50,6 @@ class SelectionTests(unittest.TestCase):
 
     def test_second_account_is_a_claude_account(self):
         self.assertEqual(ACCOUNTS["claude2"].provider, "claude")
-        self.assertEqual(ACCOUNTS["claude2"].badge, "MAX 20×")
 
 
 class StandaloneAccountTests(unittest.TestCase):
@@ -183,6 +182,51 @@ class CswapSourceTests(unittest.TestCase):
             first, second = local_provider("claude"), local_provider("claude2")
             self.assertIsInstance(first, CswapClaude)
             self.assertIs(first.accounts, second.accounts)
+
+
+class ClaudeCodeProfileTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+        patcher = patch("quota_local.Path.home", return_value=self.home)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write(self, account, stamp):
+        path = self.home / ".claude.json"
+        path.write_text(json.dumps({"projects": {}, "oauthAccount": account}))
+        os.utime(path, ns=(stamp, stamp))
+
+    def test_reads_claude_code_profile_copy_only_when_it_changes(self):
+        self.write({"organizationUuid": "org-2", "organizationType": "claude_max",
+                    "organizationRateLimitTier": "default_claude_max_20x"}, 1)
+        profile = ClaudeCodeProfile()
+        self.assertEqual(profile.plan(), "MAX 20×")
+        self.assertEqual(profile.plan("org-2"), "MAX 20×")
+        self.assertIsNone(profile.plan("org-1"))  # Another account's login is active.
+        with patch("quota_local.json.loads") as loads:
+            profile.plan()
+            loads.assert_not_called()
+        self.write({"organizationUuid": "org-1", "organizationType": "claude_pro"}, 2)
+        self.assertEqual(profile.plan("org-1"), "PRO")
+
+    def test_missing_or_malformed_profile_is_unknown(self):
+        profile = ClaudeCodeProfile()
+        self.assertIsNone(profile.plan())
+        (self.home / ".claude.json").write_text("[]")
+        self.assertIsNone(profile.plan())
+        self.write("x", 3)
+        self.assertIsNone(profile.plan())
+
+    def test_cswap_account_takes_plan_from_matching_login(self):
+        self.write({"organizationUuid": "org-2", "organizationType": "claude_max",
+                    "organizationRateLimitTier": "default_claude_max_20x"}, 1)
+        run = Mock(return_value=subprocess.CompletedProcess([], 0, json.dumps({"schemaVersion": 1, "accounts": [
+            cswap_row("claude", organizationUuid="org-1"), cswap_row("claude2", organizationUuid="org-2")]}), ""))
+        reader, profile = CswapAccounts("cswap", run=run), ClaudeCodeProfile()
+        self.assertEqual(CswapClaude("claude2", reader, profile).fetch().plan, "MAX 20×")
+        self.assertIsNone(CswapClaude("claude", reader, profile).fetch().plan)
 
 
 class AccountSensorTests(unittest.TestCase):
