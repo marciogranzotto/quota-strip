@@ -157,7 +157,7 @@ Claude reports grants only through an optional query on the same usage endpoint,
 | `QUOTA_CSWAP_BIN` | Path to cswap for local mode. Setup also records it in `.local-config.json` when cswap is on `PATH`. |
 | `QUOTA_PYTHON` | Python interpreter to use when running `setup-mac.sh`. |
 
-The header badges read `MAX 20×`, `MAX 5×` (`claude2`) and `CHATGPT PRO`; they are presentation labels, not detected subscription metadata. Quota values always come from the account response.
+The header badges read `MAX 20×` (both Claude accounts) and `CHATGPT PRO`; they are presentation labels, not detected subscription metadata. Quota values always come from the account response.
 
 The layout keeps two windows visible and rotates additional windows through the third slot when a provider reports more than three. The window is fixed at 1920 × 480.
 

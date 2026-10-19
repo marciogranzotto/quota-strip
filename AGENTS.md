@@ -53,7 +53,7 @@ Data flows **provider → `Snapshot` → `State` → display / HA sensors**:
 - Never log, print or display tokens or raw provider response bodies. Snapshots store only normalized values. Reset-credit IDs and descriptions are discarded.
 - Local mode must not modify the CLI tools' credentials. Standalone mode must never touch the CLI stores.
 - The consumer usage endpoints are unofficial. Parse defensively. A parser failure becomes `QuotaError("Quota response changed; update collector")`.
-- The `MAX 20×`, `MAX 5×` and `CHATGPT PRO` header badges are static labels in `quota_accounts.py`, not detected metadata.
+- The `MAX 20×` and `CHATGPT PRO` header badges are static labels in `quota_accounts.py`, not detected metadata.
 
 ## Product decisions from this project
 

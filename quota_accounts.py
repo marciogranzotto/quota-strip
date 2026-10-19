@@ -14,7 +14,7 @@ class Account:
 
 ACCOUNTS = {a.id: a for a in (
     Account("claude", "claude", "CLAUDE", "MAX 20×"),
-    Account("claude2", "claude", "CLAUDE2", "MAX 5×"),
+    Account("claude2", "claude", "CLAUDE2", "MAX 20×"),
     Account("codex", "codex", "CODEX", "CHATGPT PRO"),
 )}
 DEFAULT = "claude,codex"

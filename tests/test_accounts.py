@@ -50,7 +50,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_second_account_is_a_claude_account(self):
         self.assertEqual(ACCOUNTS["claude2"].provider, "claude")
-        self.assertEqual(ACCOUNTS["claude2"].badge, "MAX 5×")
+        self.assertEqual(ACCOUNTS["claude2"].badge, "MAX 20×")
 
 
 class StandaloneAccountTests(unittest.TestCase):
