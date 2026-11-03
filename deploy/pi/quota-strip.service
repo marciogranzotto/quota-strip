@@ -9,6 +9,10 @@ WorkingDirectory=/opt/quota-strip
 Environment=PYGAME_HIDE_SUPPORT_PROMPT=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=SDL_VIDEODRIVER=x11
+# SDL otherwise calls XResetScreenSaver every 30 s, which makes Xorg turn the
+# HDMI output back on while its DPMS state stays Off, undoing the Home
+# Assistant display switch. The session already disables blanking itself.
+Environment=SDL_VIDEO_ALLOW_SCREENSAVER=1
 EnvironmentFile=-%h/.config/quota-strip/display.env
 ExecStart=/usr/bin/python3 -u /opt/quota-strip/quota_display.py --source standalone
 Restart=always

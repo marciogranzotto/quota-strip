@@ -51,7 +51,7 @@ In Home Assistant, open **Settings → Devices & services → MQTT → Devices �
 
 ## Behavior and limitations
 
-Display off uses X11 DPMS, with automatic blanking timers disabled. It does not stop quota collection or power down the Pi. The display must support HDMI power management; whether its backlight fully turns off depends on its controller. The bridge reads the current graphical session's authorization again on each command, so a session restart does not leave it using an old X authority file. A newly started graphical session defaults to display on.
+Display off uses X11 DPMS, with automatic blanking timers disabled. The dashboard unit sets `SDL_VIDEO_ALLOW_SCREENSAVER=1` so SDL's periodic screensaver reset does not switch the HDMI output back on behind DPMS. It does not stop quota collection or power down the Pi. The display must support HDMI power management; whether its backlight fully turns off depends on its controller. The bridge reads the current graphical session's authorization again on each command, so a session restart does not leave it using an old X authority file. A newly started graphical session defaults to display on.
 
 If the graphical session is unavailable, only the Display entity becomes unavailable; power buttons remain available while the controller is connected. State is checked every five seconds and after a command. A broker last will marks the device offline if the connection disappears. Discovery is republished on reconnect and when Home Assistant announces startup.
 
@@ -101,6 +101,6 @@ Retained discovery entries remain in the broker. To remove them permanently, pub
 
 Automated tests cover discovery, state feedback, missing sessions, command allowlists, retained/duplicate replay handling, queue bounds, stale commands, disconnect handling, and private configuration permissions. Actual reboot and shutdown commands are mocked during tests. They are not executed during setup or display verification.
 
-On the Pi 3 test appliance, all three entities were discovered by Home Assistant. Live MQTT OFF and ON commands produced matching retained state and X11 DPMS readings, with the display restored to ON. The controller service and all 59 tests passed on the Pi. Physical reboot, shutdown, and cold-boot recovery remain untested.
+On the Pi 3 test appliance, all three entities were discovered by Home Assistant. Live MQTT OFF and ON commands produced matching retained state and X11 DPMS readings, with the display restored to ON. That check did not watch the display stay off: on 2026-11-03 the panel was found turning itself back on 30 s after OFF while X11 still reported DPMS Off, because SDL resets the X screensaver every 30 s and Xorg's reset path re-enables the output. The dashboard unit now sets `SDL_VIDEO_ALLOW_SCREENSAVER=1`; with it, the output stayed off (kernel CRTC inactive) for the full 150 s test. The controller service and all 59 tests passed on the Pi. Physical reboot, shutdown, and cold-boot recovery remain untested.
 
 Quota sensor validation: 26 enabled sensors were discovered on the test Home Assistant instance. Live MQTT payloads were received for six quota windows and the reset bank, with sensor state confirmed non-retained. Automated tests cover usage conversion, matching pacing calculations, freshness, stable entity IDs, discovery replay, and missing snapshots.
