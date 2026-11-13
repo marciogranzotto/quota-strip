@@ -25,12 +25,30 @@ class State:
         self.path = (home or data_home()) / f"{account}-snapshot.json"
         self.lock = threading.Lock()
         self.reading = Reading()
+        # When the reading restored from disk was observed: the previous process's
+        # last successful request, which the first poll must not follow too closely.
+        self.restored_at = None
         try:
             snapshot = Snapshot.from_dict(json.loads(self.path.read_text()))
             if snapshot.provider == ACCOUNTS[account].provider:
                 self.reading = Reading(snapshot, "Cached - reconnecting")
+                self.restored_at = snapshot.observed_at
         except (OSError, ValueError, TypeError, KeyError):
             pass
+
+    def resume_delay(self, interval, now):
+        """Seconds before the first poll, keeping the previous process's cadence.
+
+        A restored reading observed less than one interval ago means the last
+        process asked the provider that recently. Asking again at once can be
+        back-to-back, which the Claude usage endpoint answers with HTTP 429, so
+        the first poll waits until the interval has passed. The restored reading
+        stays marked as cached meanwhile. A future observation time (clock
+        change) is not trusted and does not delay polling.
+        """
+        if self.restored_at is None or self.restored_at > now + 60:
+            return 0
+        return min(interval, max(0, self.restored_at + interval - now))
 
     def get(self):
         with self.lock:
@@ -73,6 +91,9 @@ def poll(state, stop, interval=120, home=None, source="standalone"):
         provider = local_provider(state.account)
     else:
         provider = Provider(state.account, home)
+    delay = state.resume_delay(interval, time.time())
+    if delay:
+        stop.wait(delay)
     backoff = interval
     while not stop.is_set():
         try:

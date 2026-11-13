@@ -1,14 +1,16 @@
 """Exercise standalone auth boundaries and recovery without real credentials."""
 import http.client
 import io
+import json
 from pathlib import Path
 import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from quota_api import Provider, QuotaError
 from quota_callback import LoopbackCallback
-from quota_model import parse_codex
+from quota_model import parse_claude, parse_codex
 from quota_state import State, poll
 
 
@@ -149,6 +151,54 @@ class StandaloneTests(unittest.TestCase):
         restored = State('claude', self.home).get()
         self.assertEqual(restored.snapshot, state.get().snapshot)
         self.assertIsNotNone(restored.error)  # Reboot does not make cached data fresh.
+
+
+class ResumeCadenceTests(unittest.TestCase):
+    """A restart must not send a request right after the previous process's last one."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+
+    def save(self, observed):
+        snapshot = parse_claude({'seven_day': {'utilization': 10}}, observed)
+        (self.home / 'claude-snapshot.json').write_text(json.dumps(snapshot.to_dict()))
+
+    def test_first_poll_waits_for_the_restored_readings_interval(self):
+        now = time.time()
+        for observed, delay in ((now - 30, 90), (now - 300, 0), (now + 30, 120), (now + 600, 0)):
+            with self.subTest(age=now - observed):
+                self.save(observed)
+                state = State('claude', self.home)
+                self.assertAlmostEqual(state.resume_delay(120, now), delay)
+                self.assertEqual(state.get().error, 'Cached - reconnecting')  # Still not fresh.
+        fresh = State('claude2', self.home)  # Nothing restored.
+        self.assertEqual(fresh.resume_delay(120, now), 0)
+        fresh.success(parse_claude({'seven_day': {'utilization': 1}}, now))
+        self.assertEqual(fresh.resume_delay(120, now), 0)  # Its own reading is not a restored one.
+
+    def test_poll_waits_before_its_first_request(self):
+        self.save(time.time() - 30)
+        state = State('claude', self.home)
+        provider = Mock()
+        provider.fetch.side_effect = lambda: parse_claude({'seven_day': {'utilization': 11}}, time.time())
+        waits = []
+        class Stop:
+            done = False
+            def is_set(self):
+                return self.done
+            def wait(self, delay):
+                waits.append((delay, provider.fetch.call_count))
+                self.done = len(waits) == 2
+        with patch('quota_state.Provider', return_value=provider):
+            poll(state, Stop(), 120, self.home, 'standalone')
+        (first, fetched_before), second = waits
+        self.assertEqual(fetched_before, 0)
+        self.assertTrue(85 <= first <= 90, first)
+        self.assertEqual(second, (120, 1))
+        self.assertIsNone(state.get().error)
+        self.assertEqual(state.get().snapshot.windows[0].used, 11)
 
 
 if __name__ == '__main__':

@@ -53,6 +53,7 @@ Read from Claude Code 2.1.282's bundled client and confirmed with live read-only
 - `?at_wall=1&skip_spend=1` adds `juniper_tide`, a separate once-a-week session-limit reset offered only at a limit (`not_at_wall` otherwise). It is not a bank and is not displayed.
 - Claims are `POST /api/organizations/{org}/reset_rate_limits`. Quota Strip never calls it.
 - The usage endpoint throttles each token over a short window. A grant read sent immediately after an ordinary usage read returned HTTP 429 every time (with `Retry-After: 0`), while the same grant read alone returned 200. The grant query's response carries the ordinary quota fields too, so it replaces the ordinary read at most every 10 minutes rather than adding a request. Claude Code likewise fetches either the plain or a grant-bearing query, never both.
+- Restarts count too (measured on the Pi, 2026-11-13). A restarted dashboard used to request at once: its first grant-bearing read came 4 s after the previous process's last successful read in one restart and about 87 s after it in another, and both got HTTP 429. That stalled the account for a backoff and left its reset count unavailable for the grant query's 20-minute backoff. The throttle window is therefore at least 87 s; the normal 120 s cadence has not been rejected. The poller now waits, after a restart, until the restored reading is one poll interval old (`quota_state.State.resume_delay`).
 
 ### Claude reset kinds (2026-11-13)
 
