@@ -243,7 +243,8 @@ class ClaudeProfile:
             self.retry_at = self.monotonic() + max(self.backoff, exc.retry_after)
             self.backoff = min(self.backoff * 2, self.interval)
             return self.plan
-        self.plan = claude_plan(organization.get("organization_type"), organization.get("rate_limit_tier"))
+        self.plan = claude_plan(organization.get("organization_type"), organization.get("rate_limit_tier"),
+                                organization.get("plan_display_name"))
         self.retry_at = self.monotonic() + self.interval
         self.backoff = 600
         return self.plan

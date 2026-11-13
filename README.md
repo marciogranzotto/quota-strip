@@ -18,7 +18,7 @@ Runs natively on macOS and independently on Raspberry Pi.
 
 ## What it shows
 
-- **Claude:** current five-hour usage, the overall weekly quota, and model-specific weekly limits such as **Fable**.
+- **Claude:** the overall weekly quota, model-specific weekly limits such as **Fable**, and five-hour usage on plans that still have a five-hour limit (Ultra has none since 2026-10-30).
 - **Codex:** the quota windows reported by your ChatGPT account, including separate **Spark** limits when available.
 - **Banked Codex resets and Claude limit resets:** the available count and next expiry, with Claude's weekly, Fable, and other reset kinds counted separately.
 - **Weekly pacing:** an end-of-day allowance marker, reset countdowns, and how much room you have left today.
@@ -74,7 +74,7 @@ The strip can show a second Claude subscription, `claude2`, beside the first. Ch
 ./run.sh --source standalone --accounts claude,claude2,codex --windowed
 ```
 
-With three accounts, the strip shows three equal panels with smaller type. Each account has its own credentials, cached reading, and Home Assistant sensors. Accounts are defined in `quota_accounts.py`, which also holds each account's static header badge.
+With three accounts, the strip shows three equal panels with smaller type. Each account has its own credentials, cached reading, and Home Assistant sensors. Accounts are defined in `quota_accounts.py`; header badges come from each account's reported plan (see [Configuration](#configuration)).
 
 In local mode, Claude Code's own sign-in holds only one account, so a second Claude account needs [cswap](https://github.com/danpoyar/cswap). When cswap is installed, local mode reads every Claude account from `cswap list --json` instead of Claude Code's login, matching each account by its cswap alias:
 
@@ -163,7 +163,7 @@ Claude reports grants only through an optional query on the same usage endpoint,
 | `QUOTA_CSWAP_BIN` | Path to cswap for local mode. Setup also records it in `.local-config.json` when cswap is on `PATH`. |
 | `QUOTA_PYTHON` | Python interpreter to use when running `setup-mac.sh`. |
 
-The header badge shows the plan each provider reports for the account, such as `MAX 20×` or `CHATGPT PRO`. Claude's comes from its OAuth profile, read at most once a day in standalone mode; in local mode it comes from Claude Code's cached copy of that profile in `~/.claude.json`, which with cswap only describes the account whose login is active, so another account keeps the badge from its last snapshot. Codex reports its plan in the quota response itself. An unknown or unrecognized plan shows no badge. Quota values always come from the account response.
+The header badge shows the plan each provider reports for the account, such as `ULTRA` or `CHATGPT PRO`. Claude's comes from its OAuth profile: the plan name the profile supplies, as Claude Code shows it, or else the plan type and Max multiplier (`MAX 5×`). Claude's profile is read at most once a day in standalone mode; in local mode it comes from Claude Code's cached copy of that profile in `~/.claude.json`, which with cswap only describes the account whose login is active, so another account keeps the badge from its last snapshot. Codex reports its plan in the quota response itself. An unknown or unrecognized plan shows no badge. Quota values always come from the account response.
 
 The layout keeps two windows visible and rotates additional windows through the third slot when a provider reports more than three. The window is fixed at 1920 × 480.
 
@@ -193,7 +193,7 @@ The dashboard's only runtime dependency outside the Python standard library is *
 
 | File | Responsibility |
 | --- | --- |
-| `quota_accounts.py` | Accounts the strip can show, their providers and header badges. |
+| `quota_accounts.py` | Accounts the strip can show and their providers. |
 | `quota_model.py` | Normalize provider windows and calculate weekly allowances. |
 | `quota_local.py` | Read existing local Claude (or cswap) and Codex sign-ins. |
 | `quota_api.py`, `quota_auth.py`, `quota_callback.py` | Standalone account requests, sign-in, and browser callback. |

@@ -210,6 +210,9 @@ class ClaudeCodeProfileTests(unittest.TestCase):
             loads.assert_not_called()
         self.write({"organizationUuid": "org-1", "organizationType": "claude_pro"}, 2)
         self.assertEqual(profile.plan("org-1"), "PRO")
+        self.write({"organizationUuid": "org-2", "organizationType": "claude_max",
+                    "organizationRateLimitTier": "default_claude_max_20x", "planDisplayName": "Ultra"}, 3)
+        self.assertEqual(profile.plan("org-2"), "ULTRA")
 
     def test_missing_or_malformed_profile_is_unknown(self):
         profile = ClaudeCodeProfile()

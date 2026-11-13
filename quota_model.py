@@ -32,8 +32,10 @@ CLAUDE_GRANT_METERS = frozenset({
     "seven_day_sonnet", "seven_day_cowork", "seven_day_omelette", "seven_day_oauth_apps",
 })
 # Header badges: the plan each provider reports for the signed-in account.
-# Claude's profile names the Max multiplier only in rate_limit_tier
-# (default_claude_max_5x, default_claude_max_20x).
+# Claude's profile names the plan in organization.plan_display_name ("Ultra" for
+# the former Max 20x since 2026-10-30), which Claude Code shows when present.
+# Without it, the badge comes from organization_type, and for Max from the
+# multiplier in rate_limit_tier (default_claude_max_5x, default_claude_max_20x).
 CLAUDE_MAX_TIER = re.compile(r"_max_([1-9][0-9]*)x$")
 CLAUDE_PLANS = {"claude_pro": "PRO", "claude_max": "MAX", "claude_team": "TEAM",
                 "claude_enterprise": "ENTERPRISE"}
@@ -166,8 +168,26 @@ def reset_kinds(rows, total):
     return tuple(kinds)
 
 
-def claude_plan(organization_type, rate_limit_tier):
-    """Badge for a Claude profile's organization; "" for a plan without one."""
+def plan_display_name(value):
+    """A server-supplied plan name, accepted as Claude Code 2.1.323 accepts it:
+    1-40 letters, digits, spaces or ".+-", starting with a letter or digit and
+    ending with a letter, digit or "+". None for anything else."""
+    if not isinstance(value, str) or not 1 <= len(value) <= 40:
+        return None
+    middle = all(c.isalnum() or c in " .+-" for c in value[1:-1])
+    last = len(value) == 1 or value[-1].isalnum() or value[-1] == "+"
+    return value if value[0].isalnum() and middle and last else None
+
+
+def claude_plan(organization_type, rate_limit_tier, display_name=None):
+    """Badge for a Claude profile's organization; "" for a plan without one.
+
+    The server's display name wins, as in Claude Code; the organization type
+    and Max tier are the fallback for profiles that do not send one.
+    """
+    name = plan_display_name(display_name)
+    if name is not None:
+        return name.upper()
     tier = CLAUDE_MAX_TIER.search(rate_limit_tier) if isinstance(rate_limit_tier, str) else None
     if organization_type == "claude_max" and tier:
         return f"MAX {int(tier.group(1))}×"

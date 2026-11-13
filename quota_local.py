@@ -50,7 +50,8 @@ class ClaudeCodeProfile:
             account = self.account
         if account is None or (organization is not None and account.get("organizationUuid") != organization):
             return None
-        return claude_plan(account.get("organizationType"), account.get("organizationRateLimitTier"))
+        return claude_plan(account.get("organizationType"), account.get("organizationRateLimitTier"),
+                           account.get("planDisplayName"))
 
 
 class LocalClaude:

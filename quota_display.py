@@ -91,15 +91,14 @@ def demo(now, accounts):
         {"status": "available", "expiresAt": now + 3*86400},
         {"status": "available", "expiresAt": now + 12*86400},
     ]}}, now)
-    claude2 = parse_claude({
+    claude2 = parse_claude({  # Ultra has no five-hour limit.
         "cedar_ember": {"eligible": True, "grants": []},
-        "five_hour": {"utilization": 71, "resets_at": now + 2*3600 + 45*60},
         "seven_day": {"utilization": 48, "resets_at": now + 4*86400 + 2*3600 + 40*60},
         "limits": [{"kind": "weekly_scoped", "percent": 3,
                     "resets_at": now + 4*86400 + 2*3600 + 40*60,
                     "scope": {"model": {"display_name": "Fable"}}}],
     }, now)
-    samples = {"claude": replace(claude, plan="MAX 20×"), "claude2": replace(claude2, plan="MAX 5×"),
+    samples = {"claude": replace(claude, plan="MAX"), "claude2": replace(claude2, plan="ULTRA"),
                "codex": codex}
     return {a.id: Reading(samples[a.id]) for a in accounts}
 

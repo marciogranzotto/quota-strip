@@ -463,6 +463,17 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(claude_plan("claude_free", None), "")
         self.assertEqual(claude_plan(None, "default_claude_max_20x"), "")
 
+    def test_claude_plan_prefers_the_server_display_name(self):
+        # Since 2026-10-30 the profile names Max 20x "Ultra" while its tier is unchanged.
+        self.assertEqual(claude_plan("claude_max", "default_claude_max_20x", "Ultra"), "ULTRA")
+        self.assertEqual(claude_plan("claude_max", "default_claude_max_5x", "Max"), "MAX")
+        self.assertEqual(claude_plan(None, None, "Pro+"), "PRO+")
+        self.assertEqual(claude_plan("claude_max", None, "Max 2.0 Plus"), "MAX 2.0 PLUS")
+        # Names Claude Code would reject fall back to the reported type and tier.
+        for name in ("", " Ultra", "Ultra-", "Ultra\n", "U" * 41, "Ultra!", 7, None):
+            with self.subTest(name=name):
+                self.assertEqual(claude_plan("claude_max", "default_claude_max_20x", name), "MAX 20×")
+
     def test_codex_plan_distinguishes_unreported_from_unlabelled(self):
         self.assertEqual(codex_plan("pro"), "CHATGPT PRO")
         self.assertEqual(codex_plan("plus"), "CHATGPT PLUS")
@@ -493,7 +504,8 @@ class PlanTests(unittest.TestCase):
                                        "rate_limit_tier": "default_claude_max_5x"}},
                      QuotaError("Provider request failed (HTTP 500)", 500),
                      {"organization": {"organization_type": "claude_max",
-                                       "rate_limit_tier": "default_claude_max_20x"}}]
+                                       "rate_limit_tier": "default_claude_max_20x",
+                                       "plan_display_name": "Ultra"}}]
         calls = []
         def request(url, **kw):
             calls.append((url, kw["headers"]["Authorization"]))
@@ -513,7 +525,7 @@ class PlanTests(unittest.TestCase):
         profile.read(request, "t")
         self.assertEqual(len(calls), 2)
         clock[0] = 86400 + 600
-        self.assertEqual(profile.read(request, "t"), "MAX 20×")
+        self.assertEqual(profile.read(request, "t"), "ULTRA")  # The server's plan name wins.
 
     def test_profile_failure_never_blocks_quota(self):
         def request(url, **kw):
