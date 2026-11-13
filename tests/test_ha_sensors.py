@@ -45,17 +45,43 @@ class SensorTests(unittest.TestCase):
                 groups = sensor_groups(snapshot, self.now, self.zone)
                 self.assertIsNone(groups[snapshot.provider + '_bank'][2]['kinds'])
 
+    def test_plan_sensor_reports_age_and_staleness(self):
+        snapshot = Snapshot('claude', (), self.now, source='account', plan='ULTRA',
+                            warning='Reset count unavailable: Provider rate limited (HTTP 429)')
+        status = sensor_groups(snapshot, self.now, self.zone, 'claude2')['claude2_status'][2]
+        self.assertEqual((status['plan'], status['provider'], status['source'], status['fresh']),
+                         ('ULTRA', 'claude', 'account', True))
+        self.assertEqual(status['observed_at'], iso(self.now))
+        self.assertIn('HTTP 429', status['warning'])
+        # A stale reading keeps the sensor available so a card can say how old it is.
+        old = sensor_groups(snapshot, self.now + 601, self.zone)['claude_status'][2]
+        self.assertEqual((old['available'], old['fresh']), (True, False))
+        for plan in ('', None):  # No badge to show either way: unknown in Home Assistant.
+            values = sensor_groups(Snapshot('codex', (), self.now, plan=plan), self.now, self.zone)
+            self.assertIsNone(values['codex_status'][2]['plan'])
+        sensors = QuotaSensors(Mock(), 'test', 'root', 'ha', Path('/nonexistent'), 'UTC')
+        config = sensors.discovery('claude_status', 'Claude', 'plan', 'Plan', 'text')
+        self.assertNotIn('unit_of_measurement', config)
+        self.assertNotIn('is not none', config['availability'][1]['value_template'])
+        self.assertIn("'None'", config['value_template'])
+
     def test_stale_and_expired_data_are_unavailable(self):
+        def quotas_unavailable(groups):
+            # Quota values go unavailable; the plan sensor stays, reporting fresh=False.
+            return all(not g[2]['available'] for k, g in groups.items() if not k.endswith('_status'))
         groups = sensor_groups(self.snapshot, self.now + 601, self.zone)
-        self.assertTrue(all(not g[2]['available'] for g in groups.values()))
+        self.assertTrue(quotas_unavailable(groups))
+        self.assertFalse(groups['codex_status'][2]['fresh'])
         stale = Snapshot('claude', (
             Window('retained', 'Fable weekly', 9, self.now + WEEK, WEEK, stale=True),
             Window('expired', '5-hour', 12, self.now, FIVE_HOURS),
             Window('old', 'Weekly', 20, self.now + WEEK, WEEK, observed_at=self.now - 601),
         ), self.now)
-        self.assertTrue(all(not g[2]['available'] for g in sensor_groups(stale, self.now, self.zone).values()))
+        self.assertTrue(quotas_unavailable(sensor_groups(stale, self.now, self.zone)))
         future = Snapshot('codex', self.snapshot.windows, self.now + 61)
-        self.assertTrue(all(not g[2]['available'] for g in sensor_groups(future, self.now, self.zone).values()))
+        future_groups = sensor_groups(future, self.now, self.zone)
+        self.assertTrue(quotas_unavailable(future_groups))
+        self.assertFalse(future_groups['codex_status'][2]['fresh'])
 
     def test_stable_keys_do_not_depend_on_labels(self):
         changed = Snapshot('codex', (Window('weekly', 'Renamed', 43, self.now + WEEK, WEEK),), self.now)
@@ -73,7 +99,7 @@ class SensorTests(unittest.TestCase):
             sensors = QuotaSensors(client, 'test', 'quota_strip/test', 'homeassistant', home, 'UTC')
             sensors.refresh(self.now)
             configs = [json.loads(c.args[1]) for c in client.publish.call_args_list if c.kwargs['retain']]
-            self.assertEqual(len(configs), 10)
+            self.assertEqual(len(configs), 11)
             self.assertTrue(all(c['expire_after'] == 90 for c in configs))
             self.assertTrue(all(c['availability_mode'] == 'all' for c in configs))
             self.assertEqual(sum(c.get('device_class') == 'timestamp' for c in configs), 3)
@@ -81,16 +107,16 @@ class SensorTests(unittest.TestCase):
             self.assertIn('value_json.kinds', count['json_attributes_template'])
             client.publish.reset_mock()
             sensors.refresh(self.now + 30)
-            self.assertEqual(client.publish.call_count, 3)
+            self.assertEqual(client.publish.call_count, 4)
             self.assertTrue(all(not c.kwargs['retain'] for c in client.publish.call_args_list))
             sensors.reset_discovery()
             client.publish.reset_mock()
             sensors.refresh(self.now + 60)
-            self.assertEqual(client.publish.call_count, 13)
+            self.assertEqual(client.publish.call_count, 15)
             path.write_text('invalid JSON')
             client.publish.reset_mock()
             sensors.refresh(self.now + 90)
-            self.assertEqual(client.publish.call_count, 3)
+            self.assertEqual(client.publish.call_count, 4)
             self.assertTrue(all(not json.loads(c.args[1])['available'] for c in client.publish.call_args_list))
 
     def test_no_publication_when_disconnected(self):

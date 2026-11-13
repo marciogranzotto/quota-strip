@@ -12,6 +12,8 @@ The optional controller runs independently of the graphical dashboard. It uses [
 
 Each reported quota window automatically gets **Used**, **Remaining**, **Reset**, and (for weekly/five-hour windows) **Pacing allowance** sensors. This includes Claude, Fable, Codex, Spark, and other windows when the provider supplies them. A second Claude account gets its own entities named **Claude2 …**; the first account's entity IDs are unchanged. Codex and each Claude account also expose **Banked resets** (Claude's limit resets) and **Banked reset expiry**, the total count and the earliest expiry across all of them. The expiry sensor has a `details_complete` attribute: false means it is only the earliest listed expiry, not a verified earliest expiry across the entire bank. For Claude, the count sensor's `kinds` attribute splits the total by kind, matching the strip, for example `{"weekly": {"count": 1, "expiry": "2026-01-27T18:00:00+00:00"}, "fable": {"count": 2, "expiry": "2026-05-03T18:00:00+00:00"}}`. A kind that is not listed has none available. `kinds` is null for Codex, which has one kind, and while the split is unknown. Read it in templates with `state_attr('sensor.quota_strip_claude_banked_resets', 'kinds')`.
 
+Each account also gets a **Plan** sensor whose state is the plan badge the strip shows (`ULTRA`, `CHATGPT PRO`; unknown when the reading has no badge). Its attributes give the reading's `observed_at`, `fresh` (false once it is older than ten minutes), `source`, `warning`, and `provider`. Unlike the quota sensors it stays available while the reading is stale, so a dashboard can say how old the last reading is.
+
 Sensors share the existing Quota Strip device in Home Assistant and are available for dashboards, history, and automations. Names include the provider and window; no separate integration configuration is needed. Percentages represent the full quota: 43% used means 57% remaining. Pacing uses the same original-week allowance by local midnight and elapsed five-hour allowance as the strip display; it does not redistribute the remaining quota.
 
 The bridge reads the dashboard's local snapshots every 30 seconds without calling Claude or Codex. Normal provider collection still runs every two minutes. Sensors include an `observed_at` attribute and become unavailable for expired windows, explicitly stale model readings, missing/invalid snapshots, or observations older than ten minutes. A provider request failure that is not stored in the snapshot is reflected once its last successful reading ages out. Unknown reset times and unavailable bank expiry data are unavailable, not zero.
@@ -19,6 +21,27 @@ The bridge reads the dashboard's local snapshots every 30 seconds without callin
 Discovery is retained, but sensor state is **not retained**, following [Home Assistant's expiration guidance](https://www.home-assistant.io/integrations/sensor.mqtt/). State expires after 90 seconds without bridge updates, preventing a stopped controller or old broker message from making stale data look fresh. After Home Assistant restarts, allow up to 30 seconds for fresh sensor state. Model sensors that stop being reported remain registered but unavailable, preserving entity customizations and history.
 
 The bridge defaults to `America/Sao_Paulo`, matching the dashboard. If you change the dashboard timezone, also set `timezone` in the private MQTT configuration (or `QUOTA_TIMEZONE` in the controller service environment) to the same IANA timezone.
+
+## Strip card
+
+`deploy/home-assistant/quota-strip-card.js` is a Lovelace card that draws an account the way the strip draws its panels: logo, title and plan badge, the reset line (Claude's kinds counted separately, Fable in purple), segmented bars with the pace marker and over-budget red, reset countdowns, the left/over note, and the update footer. It reads only the sensors above and makes no requests of its own. It scales the strip's compact panel to the card's width, shows only windows with a current reading (so a five-hour window appears when an account reports one), and rotates a fourth or later window like the strip. Tapping a quota opens that sensor's history. Without the Plan sensor it still works, without the badge and source.
+
+Install it once, from a checkout:
+
+```sh
+# On the Home Assistant host (for example through the SSH app):
+mkdir -p /config/www/quota-strip
+cp deploy/home-assistant/quota-strip-card.js /config/www/quota-strip/
+```
+
+Then add a **JavaScript module** resource for `/local/quota-strip/quota-strip-card.js?v=1.0.0` (Settings → Dashboards → ⋮ → Resources), and add a card per account:
+
+```yaml
+type: custom:quota-strip-card
+account: claude            # or accounts: [claude, claude2, codex] for a row like the strip
+```
+
+An account entry may be `{id: claude2, title: WORK}` to change the title. After updating the file, raise the `?v=` number in the resource URL so browsers load the new version.
 
 ## Install
 

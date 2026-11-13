@@ -200,6 +200,7 @@ The dashboard's only runtime dependency outside the Python standard library is *
 | `quota_state.py` | Independent polling, backoff, caching, and stale readings. |
 | `quota_display.py` | Native rendering, demo mode, and command-line options. |
 | `quota_ha.py`, `setup-home-assistant.sh` | Optional MQTT discovery, display control, and Pi power buttons. |
+| `deploy/home-assistant/quota-strip-card.js` | Optional Home Assistant card that draws each account like the strip's panels. |
 | `setup-pi.sh`, `deploy/pi/` | Pi installation, LightDM session, and systemd app recovery. |
 
 Tests cover provider parsing, model-specific quotas, midnight and DST boundaries, stale data, atomic storage, and mocked authentication contracts. CI also checks shell scripts and systemd units and renders the demo headlessly. Hardware validation separately covers the real display and session lifecycle.

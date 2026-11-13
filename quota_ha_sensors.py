@@ -39,6 +39,14 @@ def sensor_groups(snapshot, now, zone, account=None):
         if window.seconds in (WEEK, FIVE_HOURS):
             fields['budget'] = ('Pacing allowance', '%')
         groups[key] = (name, fields, values)
+    # The account's reported plan, plus the reading's age, source and warning so a
+    # dashboard can draw the strip's header badge and footer. Unlike quota values,
+    # this stays available while the reading is stale: `fresh` says whether it is.
+    groups[provider + '_status'] = (
+        provider.title(), {'plan': ('Plan', 'text')},
+        {'available': True, 'plan': snapshot.plan or None, 'provider': snapshot.provider,
+         'observed_at': iso(snapshot.observed_at), 'fresh': fresh(snapshot.observed_at, now),
+         'source': snapshot.source, 'warning': snapshot.warning})
     if snapshot.reset_bank is not None:
         bank = snapshot.reset_bank
         # Claude splits resets by kind (weekly, Fable, ...); a complete split lists
@@ -82,7 +90,17 @@ class QuotaSensors:
             'json_attributes_topic': state_topic,
             'json_attributes_template': "{{ {'observed_at': value_json.observed_at} | tojson }}",
         }
-        if kind == 'timestamp':
+        if kind == 'text':
+            # "None" makes Home Assistant report unknown: no plan to show.
+            config['value_template'] = "{{ value_json.plan if value_json.plan else 'None' }}"
+            config['availability'][1]['value_template'] = (
+                "{{ 'online' if value_json.available else 'offline' }}")
+            config['json_attributes_template'] = (
+                "{{ {'observed_at': value_json.observed_at, 'fresh': value_json.fresh, "
+                "'source': value_json.source, 'warning': value_json.warning, "
+                "'provider': value_json.provider} | tojson }}")
+            config['icon'] = 'mdi:card-account-details-outline'
+        elif kind == 'timestamp':
             config['device_class'] = 'timestamp'
             if field == 'expiry':
                 config['json_attributes_template'] = (
@@ -128,5 +146,6 @@ class QuotaSensors:
             self.client.publish(f'{self.root}/quotas/{key}', json.dumps({
                 'available': False, 'observed_at': None, 'used': None, 'remaining': None,
                 'reset': None, 'budget': None, 'count': None, 'expiry': None,
-                'expiry_details_complete': False, 'kinds': None}), qos=0, retain=False)
+                'expiry_details_complete': False, 'kinds': None, 'plan': None, 'fresh': False,
+                'source': None, 'warning': None, 'provider': None}), qos=0, retain=False)
         self.known.update(current)

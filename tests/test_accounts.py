@@ -240,7 +240,8 @@ class AccountSensorTests(unittest.TestCase):
         self.assertEqual(original, sensor_groups(snap, NOW, zone, "claude"))
         second = sensor_groups(snap, NOW, zone, "claude2")
         self.assertTrue(all(key.startswith("claude2_") for key in second))
-        self.assertTrue(all(name.startswith("Claude2 ") for name, _, _ in second.values()))
+        names = [f"{name} {label}" for name, fields, _ in second.values() for label, _ in fields.values()]
+        self.assertTrue(names and all(n.startswith("Claude2 ") for n in names))
         self.assertFalse(original.keys() & second.keys())
 
     def test_refresh_publishes_second_account_snapshot(self):
