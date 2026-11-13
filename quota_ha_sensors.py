@@ -41,12 +41,18 @@ def sensor_groups(snapshot, now, zone, account=None):
         groups[key] = (name, fields, values)
     if snapshot.reset_bank is not None:
         bank = snapshot.reset_bank
+        # Claude splits resets by kind (weekly, Fable, ...); a complete split lists
+        # every kind with resets left, so an unlisted kind has none. None means the
+        # split is unknown (Codex, or a snapshot saved before kinds were recorded).
+        kinds = ({k.kind: {'count': k.available_count, 'expiry': iso(k.next_expiry)} for k in bank.kinds}
+                 if snapshot.provider == 'claude'
+                 and sum(k.available_count for k in bank.kinds) == bank.available_count else None)
         groups[provider + '_bank'] = (
             provider.title(), {'count': ('Banked resets', 'count'),
                                'expiry': ('Banked reset expiry', 'timestamp')},
             {'available': fresh(snapshot.observed_at, now) and not bank.needs_refresh(now),
              'count': bank.available_count, 'expiry': iso(bank.next_expiry),
-             'expiry_details_complete': bank.details_complete,
+             'expiry_details_complete': bank.details_complete, 'kinds': kinds,
              'observed_at': iso(snapshot.observed_at)})
     return groups
 
@@ -83,6 +89,9 @@ class QuotaSensors:
                     "{{ {'observed_at': value_json.observed_at, 'details_complete': "
                     "value_json.expiry_details_complete} | tojson }}")
         else:
+            if field == 'count':
+                config['json_attributes_template'] = (
+                    "{{ {'observed_at': value_json.observed_at, 'kinds': value_json.kinds} | tojson }}")
             config.update(state_class='measurement', suggested_display_precision=0)
             if kind == '%':
                 config['unit_of_measurement'] = '%'
@@ -119,5 +128,5 @@ class QuotaSensors:
             self.client.publish(f'{self.root}/quotas/{key}', json.dumps({
                 'available': False, 'observed_at': None, 'used': None, 'remaining': None,
                 'reset': None, 'budget': None, 'count': None, 'expiry': None,
-                'expiry_details_complete': False}), qos=0, retain=False)
+                'expiry_details_complete': False, 'kinds': None}), qos=0, retain=False)
         self.known.update(current)

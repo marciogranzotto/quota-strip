@@ -5,8 +5,8 @@ import unittest
 from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
-from quota_ha_sensors import QuotaSensors, sensor_groups
-from quota_model import Snapshot, Window, ResetBank, WEEK, FIVE_HOURS
+from quota_ha_sensors import QuotaSensors, iso, sensor_groups
+from quota_model import Snapshot, Window, ResetBank, ResetKind, WEEK, FIVE_HOURS
 
 
 class SensorTests(unittest.TestCase):
@@ -27,6 +27,23 @@ class SensorTests(unittest.TestCase):
         self.assertTrue(weekly[2]['available'])
         self.assertEqual(groups['codex_bank'][2]['count'], 2)
         self.assertFalse(groups['codex_bank'][2]['expiry_details_complete'])
+
+    def test_claude_reset_split_by_kind(self):
+        bank = ResetBank(3, self.now + 1000, True, (ResetKind('weekly', 1, self.now + 1000),
+                                                    ResetKind('fable', 2, None)))
+        claude = Snapshot('claude', (), self.now, reset_bank=bank)
+        values = sensor_groups(claude, self.now, self.zone, 'claude2')['claude2_bank'][2]
+        self.assertEqual(values['count'], 3)
+        self.assertEqual(values['kinds'], {'weekly': {'count': 1, 'expiry': iso(self.now + 1000)},
+                                           'fable': {'count': 2, 'expiry': None}})
+        none_left = Snapshot('claude', (), self.now, reset_bank=ResetBank(0, None, True))
+        self.assertEqual(sensor_groups(none_left, self.now, self.zone)['claude_bank'][2]['kinds'], {})
+        # Unknown split: Codex banks, and Claude snapshots saved before kinds were recorded.
+        saved_before = Snapshot('claude', (), self.now, reset_bank=ResetBank(3, self.now + 1000, True))
+        for snapshot in (self.snapshot, saved_before):
+            with self.subTest(provider=snapshot.provider):
+                groups = sensor_groups(snapshot, self.now, self.zone)
+                self.assertIsNone(groups[snapshot.provider + '_bank'][2]['kinds'])
 
     def test_stale_and_expired_data_are_unavailable(self):
         groups = sensor_groups(self.snapshot, self.now + 601, self.zone)
@@ -60,6 +77,8 @@ class SensorTests(unittest.TestCase):
             self.assertTrue(all(c['expire_after'] == 90 for c in configs))
             self.assertTrue(all(c['availability_mode'] == 'all' for c in configs))
             self.assertEqual(sum(c.get('device_class') == 'timestamp' for c in configs), 3)
+            count = next(c for c in configs if c['unique_id'].endswith('_bank_count'))
+            self.assertIn('value_json.kinds', count['json_attributes_template'])
             client.publish.reset_mock()
             sensors.refresh(self.now + 30)
             self.assertEqual(client.publish.call_count, 3)

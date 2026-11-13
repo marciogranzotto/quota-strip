@@ -12,8 +12,9 @@ from zoneinfo import ZoneInfo
 from quota_api import (CLAUDE_PROFILE_URL, CLAUDE_RESET_URL, PROVIDERS, ClaudeProfile, CredentialStore,
                        NoRedirect, Provider, QuotaError, atomic_json, retry_seconds, token_record)
 from quota_auth import account_id_from_token, claude_login, codex_login, pkce_challenge
-from quota_model import (ResetBank, Snapshot, Window, WEEK, FIVE_HOURS, claude_plan, claude_reset_bank,
-                         codex_plan, countdown, parse_claude, parse_codex, parse_reset_bank)
+from quota_model import (ResetBank, ResetKind, Snapshot, Window, WEEK, FIVE_HOURS, claude_plan,
+                         claude_reset_bank, claude_reset_kind, codex_plan, countdown, parse_claude,
+                         parse_codex, parse_reset_bank)
 from quota_state import Reading, State
 
 
@@ -274,10 +275,39 @@ class ClaudeResetGrantTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
 
-    def test_available_grants_count_expiry_and_cleared_meters(self):
+    def test_available_grants_count_and_expiry_by_kind(self):
         bank = claude_reset_bank(claude_grants(
             claude_grant(), claude_grant(resets_left=2, ends_at=None, clears=["five_hour"])), 10)
-        self.assertEqual(bank, ResetBank(3, 1000, True, ("five_hour", "seven_day")))
+        self.assertEqual(bank, ResetBank(3, 1000, True, (ResetKind("session", 2), ResetKind("full", 1, 1000))))
+
+    def test_weekly_and_fable_grants_as_the_server_reports_them(self):
+        # Shape of a live read on 2026-11-13: Fable grants say type "full" but give back
+        # weekly usage, which makes them Fable resets in Claude Code.
+        weekly = claude_grant(type="weekly", gives_back_weekly=False, ends_at="2026-12-10T22:00:00+00:00",
+                              clears=["seven_day", "seven_day_overage_included"])
+        fable = claude_grant(type="full", gives_back_weekly=True, ends_at="2027-03-09T07:59:00+00:00",
+                             clears=["seven_day_overage_included"])
+        bank = claude_reset_bank(claude_grants(weekly, fable, fable), epoch("2026-11-13T16:00:00+00:00"))
+        self.assertEqual(bank.available_count, 3)
+        self.assertEqual(bank.next_expiry, epoch("2026-12-10T22:00:00+00:00"))
+        self.assertEqual(bank.kinds, (ResetKind("weekly", 1, epoch("2026-12-10T22:00:00+00:00")),
+                                      ResetKind("fable", 2, epoch("2027-03-09T07:59:00+00:00"))))
+
+    def test_reset_kind_follows_claude_code(self):
+        cases = [
+            ({"gives_back_weekly": True, "type": "full", "clears": ["five_hour"]}, "fable"),
+            ({"gives_back_weekly": "yes", "type": "weekly"}, "weekly"),
+            ({"type": "session", "clears": ["seven_day"]}, "session"),
+            ({"type": "other", "clears": ["five_hour"]}, "session"),
+            ({"clears": ["seven_day", "seven_day_opus"]}, "weekly"),
+            ({"clears": ["five_hour", "seven_day"]}, "full"),
+            ({"clears": ["seven_day_fable", 3]}, "full"),  # Unrecognized meters are ignored.
+            ({"clears": "five_hour"}, "full"),
+            ({}, "full"),
+        ]
+        for grant, kind in cases:
+            with self.subTest(grant=grant):
+                self.assertEqual(claude_reset_kind(grant), kind)
 
     def test_unavailable_grants_are_not_counted(self):
         for grant in (claude_grant(paused=True), claude_grant(resets_left=0),
@@ -308,9 +338,32 @@ class ClaudeResetGrantTests(unittest.TestCase):
         self.assertNotIn("test-private", json.dumps(encoded))
         self.assertEqual(Snapshot.from_dict(encoded), snap)
         self.assertEqual(Snapshot.from_dict(json.loads(json.dumps(encoded))), snap)
-        self.assertEqual(snap.reset_bank.clears, ("five_hour", "seven_day"))
-        del encoded["reset_bank"]["clears"]  # Snapshots saved before this field.
-        self.assertEqual(Snapshot.from_dict(encoded).reset_bank.clears, ())
+        self.assertEqual(snap.reset_bank.kinds, (ResetKind("full", 1, 1000),))
+        old = json.loads(json.dumps(encoded))  # Snapshots saved before kinds: a count, no split.
+        del old["reset_bank"]["kinds"]
+        old["reset_bank"]["clears"] = ["five_hour", "seven_day"]
+        self.assertEqual(Snapshot.from_dict(old).reset_bank, ResetBank(1, 1000, True))
+
+    def test_saved_split_must_be_consistent_or_is_dropped(self):
+        good = {"available_count": 3, "next_expiry": 1000, "details_complete": True, "kinds": [
+            {"kind": "weekly", "available_count": 1, "next_expiry": 1000},
+            {"kind": "fable", "available_count": 2, "next_expiry": None}]}
+        self.assertEqual(ResetBank.from_dict(good).kinds,
+                         (ResetKind("weekly", 1, 1000), ResetKind("fable", 2)))
+        bad_rows = [
+            [{"kind": "weekly", "available_count": 1}],                                  # Sum is not 3.
+            [{"kind": "fable", "available_count": 2}, {"kind": "weekly", "available_count": 1}],  # Order.
+            [{"kind": "weekly", "available_count": 1}, {"kind": "weekly", "available_count": 2}],
+            [{"kind": "monthly", "available_count": 3}],
+            [{"kind": "weekly", "available_count": 0}, {"kind": "fable", "available_count": 3}],
+            [{"kind": "fable", "available_count": True}],
+            [{"kind": "fable", "available_count": 3, "next_expiry": "bad"}],
+            "fable",
+        ]
+        for rows in bad_rows:
+            with self.subTest(rows=rows):
+                bank = ResetBank.from_dict(good | {"kinds": rows})
+                self.assertEqual((bank.available_count, bank.kinds), (3, ()))
 
     def test_grants_ride_on_one_quota_request_every_ten_minutes(self):
         clock = [0]

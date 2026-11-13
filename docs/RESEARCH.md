@@ -54,9 +54,28 @@ Read from Claude Code 2.1.282's bundled client and confirmed with live read-only
 - Claims are `POST /api/organizations/{org}/reset_rate_limits`. Quota Strip never calls it.
 - The usage endpoint throttles each token over a short window. A grant read sent immediately after an ordinary usage read returned HTTP 429 every time (with `Retry-After: 0`), while the same grant read alone returned 200. The grant query's response carries the ordinary quota fields too, so it replaces the ordinary read at most every 10 minutes rather than adding a request. Claude Code likewise fetches either the plain or a grant-bearing query, never both.
 
+### Claude reset kinds (2026-11-13)
+
+Claude now issues more than one kind of limit reset. claude.ai's usage page lists them separately, for example "Fable reset · 2" ("Refills your Fable allowance and gives back what Fable used on your weekly limit. It doesn't reset your whole week.") beside "Weekly reset".
+
+Read from Claude Code 2.1.323's bundled client:
+
+- Grants gained `type` (`session`, `weekly`, `full`), `gives_back_weekly`, and `unavailable_reason`. The status block gained `paused_held` and `event_props`, and grants gained `arm`; none of these are used.
+- `clears` is filtered to `five_hour`, `seven_day`, `seven_day_overage_included`, `seven_day_opus`, `seven_day_sonnet`, `seven_day_cowork`, `seven_day_omelette`, and `seven_day_oauth_apps`.
+- The client classifies a grant as `fable` when `gives_back_weekly` is true. Otherwise it uses `type` when present. Otherwise it uses `clears`: `five_hour` alone is `session`, meters without `five_hour` are `weekly`, and both (or none recognized) are `full`.
+- The client names the kinds "5-hour reset", "weekly reset", "Fable reset", and "full reset". For a Fable grant it reads `seven_day_overage_included` as the Fable meter, not the weekly one.
+
+A live read-only grant query from the Pi's sign-ins on 2026-11-13 matched the claude.ai page. Each account had one grant with `type: "weekly"`, `gives_back_weekly: false`, and `clears: ["seven_day", "seven_day_overage_included"]`, expiring 2026-12-10T22:00Z. The first account had two Fable grants and the second had one, each with `type: "full"`, `gives_back_weekly: true`, and `clears: ["seven_day_overage_included"]`, expiring 2027-03-09T07:59Z. The same responses had no non-null `five_hour`.
+
+**Correction:** until this change, Quota Strip summed every grant into one count with one earliest expiry and mapped `seven_day_overage_included` to the weekly meter. It therefore showed "3 LIMIT RESETS · WEEKLY, next expires 10 Dec" for one weekly and two Fable resets. Resets are now classified with Claude Code's rule (`quota_model.claude_reset_kind`) and stored per kind.
+
 ### Codex Spark (2026-09-25)
 
 The account responses no longer report a Spark limit: `wham/usage` returned `additional_rate_limits: null`, and the app-server's `rateLimitsByLimitId` contained only `codex`. On 2026-09-05 the same account reported `GPT-5.3-Codex-Spark` five-hour and weekly windows. The parser still recognizes Spark if it returns. The usage response also gained `rate_limit_reset_credits.applicable_available_count` (0 while `available_count` was 1); its meaning is unverified and it is not used.
+
+### Claude five-hour window (2026-11-13)
+
+Neither Claude account has reported a five-hour meter since 2026-10-31. Measured from Home Assistant's hourly long-term statistics: the `claude` five-hour sensor's last reading was in the 2026-10-31 03:00 UTC hour, and `claude2`'s in the 12:00 UTC hour the same day. The first account's weekly meter kept rising after that, so the window is missing even while the account is in use. On 2026-11-13 the Pi's standalone snapshots for both accounts held only `seven_day` and the Fable `limits[].weekly_scoped` meter, and cswap's reshaped usage for both accounts carried only `sevenDay` and `scoped`. A live grant read on 2026-11-13 (see Claude reset kinds above) had no non-null `five_hour`; whether the field is `null` or absent was not recorded. The parser skips it either way. Both accounts' current limit-reset grants clear only `seven_day`. The parser and the strip still show the five-hour window if it returns. The Home Assistant dashboard shows its 5-hour gauges and table rows only while those sensors have values.
 
 The dashboard reads metadata only; it does not implement reset redemption. Ordinary usage remains available when optional bank metadata is missing or malformed.
 

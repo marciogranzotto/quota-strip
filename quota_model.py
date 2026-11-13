@@ -21,9 +21,16 @@ CLAUDE_LEGACY_WINDOWS = frozenset({
 # server did not evaluate this account for our request, so the count is
 # unknown. Other reasons (no_grant, tier, seat, ...) mean no reset applies.
 CLAUDE_RESET_UNKNOWN = frozenset({"surface", "cli_version", "mobile", "unavailable", "unknown"})
-# Quota windows a Claude grant can clear, normalized to the meters shown here.
-CLAUDE_RESET_CLEARS = {"five_hour": "five_hour", "seven_day": "seven_day",
-                       "seven_day_overage_included": "seven_day"}
+# Claude limit-reset kinds in Claude Code's order: a five-hour ("session") reset,
+# a weekly reset, a Fable reset (refills Fable and gives back what Fable used of
+# the weekly limit, without resetting the week), and a full reset. Grants are
+# classified as Claude Code 2.1.323 classifies them; see docs/RESEARCH.md.
+CLAUDE_RESET_KINDS = ("session", "weekly", "fable", "full")
+# Meter keys Claude Code keeps from a grant's clears list; others are ignored.
+CLAUDE_GRANT_METERS = frozenset({
+    "five_hour", "seven_day", "seven_day_overage_included", "seven_day_opus",
+    "seven_day_sonnet", "seven_day_cowork", "seven_day_omelette", "seven_day_oauth_apps",
+})
 # Header badges: the plan each provider reports for the signed-in account.
 # Claude's profile names the Max multiplier only in rate_limit_tier
 # (default_claude_max_5x, default_claude_max_20x).
@@ -89,12 +96,39 @@ class Window:
         return self.resets_at is not None and self.resets_at <= now
 
 
+def valid_expiry(value):
+    """A timestamp that converts to a date; None for anything else."""
+    expiry = timestamp(value)
+    if expiry is None:
+        return None
+    try:
+        datetime.fromtimestamp(expiry, timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return expiry
+
+
+def count_value(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+@dataclass(frozen=True)
+class ResetKind:
+    """Available resets of one kind (CLAUDE_RESET_KINDS) and their earliest expiry."""
+    kind: str
+    available_count: int
+    next_expiry: float | None = None
+
+
 @dataclass(frozen=True)
 class ResetBank:
     available_count: int
     next_expiry: float | None = None
     details_complete: bool = False
-    clears: tuple[str, ...] = ()
+    # Claude only: the count split by kind, in CLAUDE_RESET_KINDS order, listing
+    # kinds with resets available. Empty when the split is unknown (Codex, older
+    # snapshots); a complete Claude bank's unlisted kinds have none available.
+    kinds: tuple[ResetKind, ...] = ()
 
     def needs_refresh(self, now):
         return self.next_expiry is not None and self.next_expiry <= now
@@ -103,20 +137,33 @@ class ResetBank:
     def from_dict(cls, data):
         if not isinstance(data, dict):
             return None
-        count = data.get("available_count")
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        count = count_value(data.get("available_count"))
+        if count is None:
             return None
-        expiry = timestamp(data.get("next_expiry"))
+        expiry = valid_expiry(data.get("next_expiry"))
         if data.get("next_expiry") is not None and expiry is None:
             return cls(count)
-        if expiry is not None:
-            try:
-                datetime.fromtimestamp(expiry, timezone.utc)
-            except (ValueError, OverflowError, OSError):
-                return cls(count)
-        clears = data.get("clears")
-        clears = tuple(c for c in clears if c in ("five_hour", "seven_day")) if isinstance(clears, (list, tuple)) else ()
-        return cls(count, expiry, data.get("details_complete") is True, clears)
+        return cls(count, expiry, data.get("details_complete") is True, reset_kinds(data.get("kinds"), count))
+
+
+def reset_kinds(rows, total):
+    """Saved per-kind counts; () unless every row is valid and they add up to the total."""
+    if not isinstance(rows, (list, tuple)):
+        return ()
+    kinds = []
+    for row in rows:
+        if not isinstance(row, dict) or row.get("kind") not in CLAUDE_RESET_KINDS:
+            return ()
+        count = count_value(row.get("available_count"))
+        expiry = valid_expiry(row.get("next_expiry"))
+        if not count or (row.get("next_expiry") is not None and expiry is None):
+            return ()
+        kinds.append(ResetKind(row["kind"], count, expiry))
+    order = [k.kind for k in kinds]
+    if (sum(k.available_count for k in kinds) != total or len(set(order)) != len(order)
+            or order != sorted(order, key=CLAUDE_RESET_KINDS.index)):
+        return ()
+    return tuple(kinds)
 
 
 def claude_plan(organization_type, rate_limit_tier):
@@ -168,8 +215,27 @@ def parse_reset_bank(data):
     return ResetBank(bank.available_count, min(expiries) if expiries else None, complete)
 
 
+def claude_reset_kind(grant):
+    """The kind of reset a grant gives, decided as Claude Code decides it.
+
+    A grant that gives back what Fable used of the weekly limit is a Fable
+    reset; otherwise the server's type wins; otherwise the meters it clears
+    decide: five-hour alone is a session reset, no five-hour is a weekly
+    reset, and both (or none Claude Code recognizes) is a full reset.
+    """
+    if grant.get("gives_back_weekly") is True:
+        return "fable"
+    if grant.get("type") in ("session", "weekly", "full"):
+        return grant["type"]
+    clears = grant.get("clears") if isinstance(grant.get("clears"), list) else []
+    clears = [c for c in clears if isinstance(c, str) and c in CLAUDE_GRANT_METERS]
+    session = "five_hour" in clears
+    other = any(c != "five_hour" for c in clears)
+    return "session" if session and not other else "weekly" if other and not session else "full"
+
+
 def claude_reset_bank(data, now):
-    """Summarize Claude limit-reset grants; discard grant IDs and labels.
+    """Summarize Claude limit-reset grants by kind; discard grant IDs and labels.
 
     Returns None when the count is unknown: no status block, a reason that
     means this account was not evaluated, or a grant this parser cannot read.
@@ -186,7 +252,7 @@ def claude_reset_bank(data, now):
         grants = []
     if not isinstance(grants, list):
         return None
-    count, expiries, clears = 0, [], set()
+    counts, expiries = {}, {}
     for grant in grants:
         if not isinstance(grant, dict):
             return None
@@ -201,14 +267,14 @@ def claude_reset_bank(data, now):
         if (not left or grant.get("paused") or (starts is not None and starts > now)
                 or (ends is not None and ends <= now)):
             continue
-        count += left
+        kind = claude_reset_kind(grant)
+        counts[kind] = counts.get(kind, 0) + left
         if ends is not None:
-            expiries.append(ends)
-        for key in grant.get("clears") if isinstance(grant.get("clears"), list) else ():
-            if isinstance(key, str) and key in CLAUDE_RESET_CLEARS:
-                clears.add(CLAUDE_RESET_CLEARS[key])
-    return ResetBank(count, min(expiries) if expiries else None, True,
-                     tuple(k for k in ("five_hour", "seven_day") if k in clears))
+            expiries.setdefault(kind, []).append(ends)
+    kinds = tuple(ResetKind(k, counts[k], min(expiries[k]) if k in expiries else None)
+                  for k in CLAUDE_RESET_KINDS if k in counts)
+    earliest = [k.next_expiry for k in kinds if k.next_expiry is not None]
+    return ResetBank(sum(counts.values()), min(earliest) if earliest else None, True, kinds)
 
 
 @dataclass(frozen=True)

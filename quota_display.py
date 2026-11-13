@@ -32,6 +32,11 @@ ORANGE = (238, 171, 103)
 YELLOW = (234, 210, 128)
 
 
+# Claude limit-reset kinds (quota_model.CLAUDE_RESET_KINDS): header and note names.
+RESET_KINDS = {"session": ("5H", "5-hour"), "weekly": ("WEEKLY", "Weekly"),
+               "fable": ("FABLE", "Fable"), "full": ("FULL", "Full")}
+
+
 def rate_color(used):
     return RED if used >= 95 else ORANGE if used >= 75 else YELLOW if used >= 50 else GREEN
 
@@ -69,7 +74,10 @@ def demo(now, accounts):
     from quota_model import parse_claude, parse_codex
     claude = parse_claude({
         "cedar_ember": {"eligible": True, "grants": [
-            {"resets_left": 1, "ends_at": now + 20*86400, "clears": ["five_hour", "seven_day"]},
+            {"resets_left": 1, "ends_at": now + 20*86400, "type": "weekly",
+             "clears": ["seven_day", "seven_day_overage_included"]},
+            {"resets_left": 2, "ends_at": now + 116*86400, "type": "full", "gives_back_weekly": True,
+             "clears": ["seven_day_overage_included"]},
         ]},
         "five_hour": {"utilization": 32, "resets_at": now + 2*3600},
         "seven_day": {"utilization": 24, "resets_at": now + 2*86400 + 15*3600 + 11*60},
@@ -110,16 +118,19 @@ class Display:
         self.scaled = {}
 
     def text(self, value, x, y, size=22, color=FG, bold=False, right=False, max_width=None):
-        key = (size, bold)
-        if key not in self.fonts:
-            self.fonts[key] = self.pg.font.SysFont("dejavusans", size, bold=bold)
-        font = self.fonts[key]
+        font = self.font(size, bold)
         value = str(value)
         if max_width is not None:
             while value and font.size(value)[0] > max_width:
                 value = value[:-2] + "…" if len(value) > 1 else ""
         image = font.render(value, True, color)
         self.surface.blit(image, image.get_rect(topright=(x, y)) if right else (x, y))
+        return image.get_width()
+
+    def font(self, size, bold=False):
+        if (size, bold) not in self.fonts:
+            self.fonts[size, bold] = self.pg.font.SysFont("dejavusans", size, bold=bold)
+        return self.fonts[size, bold]
 
     def logo(self, provider, size):
         if (provider, size) not in self.scaled:
@@ -197,23 +208,39 @@ class Display:
             return
         old = stale or bank.needs_refresh(now)
         color = MUTED if old or not bank.available_count else GREEN
-        clears = " + ".join({"five_hour": "5H", "seven_day": "WEEKLY"}[c] for c in bank.clears)
-        self.text(f"{bank.available_count} {noun}" + ("S" if bank.available_count != 1 else "")
-                  + (f" · {clears}" if clears and bank.available_count else ""),
-                  x, y, big, color, True, max_width=width)
+        plural = "S" if bank.available_count != 1 else ""
+        # Kinds that differ in what they refill are counted separately,
+        # e.g. "1 WEEKLY · 2 FABLE RESETS", Fable in its purple accent.
+        parts = [(f"{k.available_count} {RESET_KINDS[k.kind][0]}",
+                  color if old or k.kind != "fable" else PURPLE) for k in bank.kinds]
+        parts = [p for part in parts for p in ((" · ", color), part)][1:] + [(f" RESET{plural}", color)]
+        if bank.kinds and sum(self.font(big, True).size(t)[0] for t, _ in parts) <= width:
+            offset = x
+            for value, part_color in parts:
+                offset += self.text(value, offset, y, big, part_color, True)
+        else:
+            self.text(f"{bank.available_count} {noun}{plural}", x, y, big, color, True, max_width=width)
         if old:
             note = "Last known · awaiting update"
         elif bank.available_count == 0:
             note = "None available"
-        elif bank.next_expiry is not None:
-            expiry = datetime.fromtimestamp(bank.next_expiry, self.zone)
-            prefix = "Next expires" if bank.details_complete else "Listed expiry"
-            note = f"{prefix} {expiry:%d %b · %H:%M}"
-            if bank.next_expiry - now <= 86400:
-                color = ORANGE
+        elif len(bank.kinds) > 1:
+            note = " · ".join(f"{RESET_KINDS[k.kind][1]} " + (
+                f"{datetime.fromtimestamp(k.next_expiry, self.zone):%d %b %H:%M}"
+                if k.next_expiry is not None else "no expiry") for k in bank.kinds)
+            if self.font(small).size(note)[0] > width:
+                note = self.expiry_note(bank)
         else:
-            note = "No expiry" if bank.details_complete else "Expiry unavailable"
+            note = self.expiry_note(bank)
+        if not old and bank.available_count and bank.next_expiry is not None and bank.next_expiry - now <= 86400:
+            color = ORANGE
         self.text(note, x, y + s.bank_gap, small, color, max_width=width)
+
+    def expiry_note(self, bank):
+        if bank.next_expiry is None:
+            return "No expiry" if bank.details_complete else "Expiry unavailable"
+        expiry = datetime.fromtimestamp(bank.next_expiry, self.zone)
+        return f"{'Next expires' if bank.details_complete else 'Listed expiry'} {expiry:%d %b · %H:%M}"
 
     def panel(self, account, reading, x, width, now):
         s = FULL if width >= 900 else COMPACT
